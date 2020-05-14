@@ -25,7 +25,6 @@ import org.apache.hadoop.io.Text;
 import org.apache.hadoop.ozone.OzoneAcl;
 import org.apache.hadoop.ozone.client.*;
 import org.apache.hadoop.hdds.client.OzoneQuota;
-import org.apache.hadoop.hdds.client.ReplicationFactor;
 import org.apache.hadoop.hdds.client.ReplicationType;
 import org.apache.hadoop.ozone.client.io.OzoneInputStream;
 import org.apache.hadoop.ozone.client.io.OzoneOutputStream;
@@ -262,7 +261,7 @@ public interface ClientProtocol {
    */
   OzoneOutputStream createKey(String volumeName, String bucketName,
                               String keyName, long size, ReplicationType type,
-                              ReplicationFactor factor,
+                              int replication,
                               Map<String, String> metadata)
       throws IOException;
 
@@ -371,13 +370,13 @@ public interface ClientProtocol {
    * @param bucketName
    * @param keyName
    * @param type
-   * @param factor
+   * @param replication
    * @return {@link OmMultipartInfo}
    * @throws IOException
    */
   OmMultipartInfo initiateMultipartUpload(String volumeName, String
-      bucketName, String keyName, ReplicationType type, ReplicationFactor
-      factor) throws IOException;
+      bucketName, String keyName, ReplicationType type,
+      int replication) throws IOException;
 
   /**
    * Create a part key for a multipart upload key.
@@ -554,7 +553,7 @@ public interface ClientProtocol {
    * @param keyName    Absolute path of the file to be written
    * @param size       Size of data to be written
    * @param type       Replication Type
-   * @param factor     Replication Factor
+   * @param replication Replication number
    * @param overWrite  if true existing file at the location will be overwritten
    * @param recursive  if true file would be created even if parent directories
    *                   do not exist
@@ -568,7 +567,7 @@ public interface ClientProtocol {
    */
   @SuppressWarnings("checkstyle:parameternumber")
   OzoneOutputStream createFile(String volumeName, String bucketName,
-      String keyName, long size, ReplicationType type, ReplicationFactor factor,
+      String keyName, long size, ReplicationType type, int replication,
       boolean overWrite, boolean recursive) throws IOException;
 
   /**

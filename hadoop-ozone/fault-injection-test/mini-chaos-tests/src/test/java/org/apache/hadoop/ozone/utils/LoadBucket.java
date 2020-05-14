@@ -22,7 +22,6 @@ import org.apache.commons.lang3.RandomUtils;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.ozone.OzoneFileSystem;
-import org.apache.hadoop.hdds.client.ReplicationFactor;
 import org.apache.hadoop.hdds.client.ReplicationType;
 import org.apache.hadoop.hdds.conf.OzoneConfiguration;
 import org.apache.hadoop.ozone.OzoneConsts;
@@ -167,7 +166,7 @@ public class LoadBucket {
     @Override
     void doBucketOp(String key) throws IOException {
       os = bucket.createKey(key, 0, ReplicationType.RATIS,
-          ReplicationFactor.THREE, new HashMap<>());
+          3, new HashMap<>());
     }
 
     @Override

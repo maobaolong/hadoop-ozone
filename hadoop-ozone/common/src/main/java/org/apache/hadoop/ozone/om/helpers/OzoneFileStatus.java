@@ -40,7 +40,7 @@ public class OzoneFileStatus extends FileStatus {
   transient private OmKeyInfo keyInfo;
 
   public OzoneFileStatus(OmKeyInfo key, long blockSize, boolean isDirectory) {
-    super(key.getDataSize(), isDirectory, key.getFactor().getNumber(),
+    super(key.getDataSize(), isDirectory, key.getReplication(),
         blockSize, key.getModificationTime(), getPath(key.getKeyName()));
     keyInfo = key;
   }

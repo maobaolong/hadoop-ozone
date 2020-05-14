@@ -32,7 +32,6 @@ import org.apache.hadoop.fs.BlockLocation;
 import org.apache.hadoop.fs.FileAlreadyExistsException;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hdds.client.ReplicationFactor;
 import org.apache.hadoop.hdds.client.ReplicationType;
 import org.apache.hadoop.hdds.conf.ConfigurationSource;
 import org.apache.hadoop.hdds.conf.OzoneConfiguration;
@@ -73,13 +72,13 @@ public class BasicOzoneClientAdapterImpl implements OzoneClientAdapter {
 
   static final Logger LOG =
       LoggerFactory.getLogger(BasicOzoneClientAdapterImpl.class);
+  private final int replication;
 
   private OzoneClient ozoneClient;
   private ObjectStore objectStore;
   private OzoneVolume volume;
   private OzoneBucket bucket;
   private ReplicationType replicationType;
-  private ReplicationFactor replicationFactor;
   private boolean securityEnabled;
   private int configuredDnPort;
 
@@ -174,7 +173,7 @@ public class BasicOzoneClientAdapterImpl implements OzoneClientAdapter {
       this.volume = objectStore.getVolume(volumeStr);
       this.bucket = volume.getBucket(bucketStr);
       this.replicationType = ReplicationType.valueOf(replicationTypeConf);
-      this.replicationFactor = ReplicationFactor.valueOf(replicationCountConf);
+      this.replication = replicationCountConf;
       this.configuredDnPort = conf.getInt(
           OzoneConfigKeys.DFS_CONTAINER_IPC_PORT,
           OzoneConfigKeys.DFS_CONTAINER_IPC_PORT_DEFAULT);
@@ -186,7 +185,7 @@ public class BasicOzoneClientAdapterImpl implements OzoneClientAdapter {
 
   @Override
   public short getDefaultReplication() {
-    return (short) replicationFactor.getValue();
+    return (short) replication;
   }
 
   @Override
@@ -220,15 +219,13 @@ public class BasicOzoneClientAdapterImpl implements OzoneClientAdapter {
     incrementCounter(Statistic.OBJECTS_CREATED);
     try {
       OzoneOutputStream ozoneOutputStream = null;
-      if (replication == ReplicationFactor.ONE.getValue()
-          || replication == ReplicationFactor.THREE.getValue()) {
-        ReplicationFactor clientReplication = ReplicationFactor
-            .valueOf(replication);
+      if (replication == 1
+          || replication == 3) {
         ozoneOutputStream = bucket.createFile(key, 0, replicationType,
-            clientReplication, overWrite, recursive);
+            replication, overWrite, recursive);
       } else {
         ozoneOutputStream = bucket.createFile(key, 0, replicationType,
-            replicationFactor, overWrite, recursive);
+            this.replication, overWrite, recursive);
       }
       return new OzoneFSOutputStream(ozoneOutputStream.getOutputStream());
     } catch (OMException ex) {

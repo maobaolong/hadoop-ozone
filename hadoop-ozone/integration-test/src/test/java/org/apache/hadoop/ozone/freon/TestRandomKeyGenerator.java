@@ -20,7 +20,6 @@ package org.apache.hadoop.ozone.freon;
 
 import java.util.concurrent.TimeUnit;
 
-import org.apache.hadoop.hdds.client.ReplicationFactor;
 import org.apache.hadoop.hdds.client.ReplicationType;
 import org.apache.hadoop.hdds.conf.DatanodeRatisServerConfig;
 import org.apache.hadoop.hdds.conf.OzoneConfiguration;
@@ -89,7 +88,7 @@ public class TestRandomKeyGenerator {
     randomKeyGenerator.setNumOfVolumes(2);
     randomKeyGenerator.setNumOfBuckets(5);
     randomKeyGenerator.setNumOfKeys(10);
-    randomKeyGenerator.setFactor(ReplicationFactor.THREE);
+    randomKeyGenerator.setReplication(3);
     randomKeyGenerator.setType(ReplicationType.RATIS);
     randomKeyGenerator.call();
     Assert.assertEquals(2, randomKeyGenerator.getNumberOfVolumesCreated());
@@ -106,7 +105,7 @@ public class TestRandomKeyGenerator {
     randomKeyGenerator.setNumOfKeys(10);
     randomKeyGenerator.setNumOfThreads(10);
     randomKeyGenerator.setKeySize(10240);
-    randomKeyGenerator.setFactor(ReplicationFactor.THREE);
+    randomKeyGenerator.setReplication(3);
     randomKeyGenerator.setType(ReplicationType.RATIS);
     randomKeyGenerator.call();
     Assert.assertEquals(10, randomKeyGenerator.getNumberOfVolumesCreated());
@@ -123,7 +122,7 @@ public class TestRandomKeyGenerator {
     randomKeyGenerator.setNumOfKeys(10);
     randomKeyGenerator.setNumOfThreads(10);
     randomKeyGenerator.setKeySize(10240);
-    randomKeyGenerator.setFactor(ReplicationFactor.THREE);
+    randomKeyGenerator.setReplication(3);
     randomKeyGenerator.setType(ReplicationType.RATIS);
     randomKeyGenerator.call();
     Assert.assertEquals(10, randomKeyGenerator.getNumberOfVolumesCreated());
@@ -141,7 +140,7 @@ public class TestRandomKeyGenerator {
     randomKeyGenerator.setNumOfKeys(1);
     randomKeyGenerator.setNumOfThreads(1);
     randomKeyGenerator.setKeySize(10L + Integer.MAX_VALUE);
-    randomKeyGenerator.setFactor(ReplicationFactor.THREE);
+    randomKeyGenerator.setReplication(3);
     randomKeyGenerator.setType(ReplicationType.RATIS);
     randomKeyGenerator.setValidateWrites(true);
     randomKeyGenerator.call();
@@ -160,7 +159,7 @@ public class TestRandomKeyGenerator {
     randomKeyGenerator.setNumOfKeys(1);
     randomKeyGenerator.setNumOfThreads(1);
     randomKeyGenerator.setKeySize(0);
-    randomKeyGenerator.setFactor(ReplicationFactor.THREE);
+    randomKeyGenerator.setReplication(3);
     randomKeyGenerator.setType(ReplicationType.RATIS);
     randomKeyGenerator.setValidateWrites(true);
     randomKeyGenerator.call();
@@ -177,7 +176,7 @@ public class TestRandomKeyGenerator {
     randomKeyGenerator.setNumOfVolumes(1);
     randomKeyGenerator.setNumOfBuckets(1);
     randomKeyGenerator.setNumOfKeys(1);
-    randomKeyGenerator.setFactor(ReplicationFactor.THREE);
+    randomKeyGenerator.setReplication(3);
     randomKeyGenerator.setType(ReplicationType.RATIS);
     randomKeyGenerator.setNumOfThreads(10);
     randomKeyGenerator.call();

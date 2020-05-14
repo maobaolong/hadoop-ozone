@@ -110,7 +110,7 @@ public class TestContainerEndpoint {
         new ContainerInfo.Builder()
             .setContainerID(containerID.getId())
             .setNumberOfKeys(keyCount)
-            .setReplicationFactor(ReplicationFactor.THREE)
+            .setReplication(3)
             .setPipelineID(pipelineID)
             .build()
     );

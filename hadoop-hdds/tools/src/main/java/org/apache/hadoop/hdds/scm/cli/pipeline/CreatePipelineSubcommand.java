@@ -51,8 +51,7 @@ public class CreatePipelineSubcommand implements Callable<Void> {
       description = "Replication factor (ONE, THREE)",
       defaultValue = "ONE"
   )
-  private HddsProtos.ReplicationFactor factor
-      = HddsProtos.ReplicationFactor.ONE;
+  private int replication = 1;
 
   @Override
   public Void call() throws Exception {
@@ -63,12 +62,12 @@ public class CreatePipelineSubcommand implements Callable<Void> {
     try (ScmClient scmClient = parent.getParent().createScmClient()) {
       Pipeline pipeline = scmClient.createReplicationPipeline(
           type,
-          factor,
+          replication,
           HddsProtos.NodePool.getDefaultInstance());
 
       if (pipeline != null) {
         System.out.println(pipeline.getId().toString() +
-            " is created. Factor: " + pipeline.getFactor() +
+            " is created. Replication: " + pipeline.getReplication() +
             ", Type: " + pipeline.getType());
       }
       return null;

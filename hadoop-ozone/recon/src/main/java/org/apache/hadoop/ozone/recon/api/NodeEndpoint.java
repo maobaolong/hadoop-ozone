@@ -87,7 +87,7 @@ public class NodeEndpoint {
           DatanodePipeline datanodePipeline = new DatanodePipeline(
               pipelineID.getId(),
               pipeline.getType().toString(),
-              pipeline.getFactor().getNumber()
+              pipeline.getReplication()
           );
           pipelines.add(datanodePipeline);
         } catch (PipelineNotFoundException ex) {

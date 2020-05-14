@@ -36,7 +36,6 @@ import org.apache.commons.lang3.builder.EqualsBuilder;
 import org.apache.commons.lang3.builder.HashCodeBuilder;
 import org.apache.hadoop.hdds.protocol.DatanodeDetails;
 import org.apache.hadoop.hdds.protocol.proto.HddsProtos;
-import org.apache.hadoop.hdds.protocol.proto.HddsProtos.ReplicationFactor;
 import org.apache.hadoop.hdds.protocol.proto.HddsProtos.ReplicationType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -51,7 +50,7 @@ public final class Pipeline {
   private static final Logger LOG = LoggerFactory.getLogger(Pipeline.class);
   private final PipelineID id;
   private final ReplicationType type;
-  private final ReplicationFactor factor;
+  private final int replication;
 
   private PipelineState state;
   private Map<DatanodeDetails, Long> nodeStatus;
@@ -68,11 +67,11 @@ public final class Pipeline {
    * the container allocations for a particular pipeline.
    */
   private Pipeline(PipelineID id, ReplicationType type,
-      ReplicationFactor factor, PipelineState state,
+      int replication, PipelineState state,
       Map<DatanodeDetails, Long> nodeStatus) {
     this.id = id;
     this.type = type;
-    this.factor = factor;
+    this.replication = replication;
     this.state = state;
     this.nodeStatus = nodeStatus;
     this.creationTimestamp = Instant.now();
@@ -97,12 +96,12 @@ public final class Pipeline {
   }
 
   /**
-   * Returns the factor.
+   * Returns the number of the replication.
    *
    * @return type - Simple or Ratis.
    */
-  public ReplicationFactor getFactor() {
-    return factor;
+  public int getReplication() {
+    return replication;
   }
 
   /**
@@ -256,16 +255,19 @@ public final class Pipeline {
 
   public HddsProtos.Pipeline getProtobufMessage()
       throws UnknownPipelineStateException {
+    // TODO(maobaolong): remove this compatible purpose block after clear factor
     HddsProtos.Pipeline.Builder builder = HddsProtos.Pipeline.newBuilder()
         .setId(id.getProtobuf())
         .setType(type)
-        .setFactor(factor)
+        .setReplication(replication)
+        .setFactor(HddsProtos.ReplicationFactor.valueOf(replication))
         .setState(PipelineState.getProtobuf(state))
         .setLeaderID(leaderId != null ? leaderId.toString() : "")
         .setCreationTimeStamp(creationTimestamp.toEpochMilli())
         .addAllMembers(nodeStatus.keySet().stream()
             .map(DatanodeDetails::getProtoBufMessage)
             .collect(Collectors.toList()));
+
     // To save the message size on wire, only transfer the node order based on
     // network topology
     List<DatanodeDetails> nodes = nodesInOrder.get();
@@ -289,17 +291,23 @@ public final class Pipeline {
   public static Pipeline getFromProtobuf(HddsProtos.Pipeline pipeline)
       throws UnknownPipelineStateException {
     Preconditions.checkNotNull(pipeline, "Pipeline is null");
-    return new Builder().setId(PipelineID.getFromProtobuf(pipeline.getId()))
-        .setFactor(pipeline.getFactor())
+    Builder builder = new Builder().setId(PipelineID.getFromProtobuf(pipeline.getId()))
         .setType(pipeline.getType())
-        .setState(PipelineState.fromProtobuf(pipeline.getState()))
-        .setLeaderId(StringUtils.isNotEmpty(pipeline.getLeaderID()) ?
-            UUID.fromString(pipeline.getLeaderID()) : null)
-        .setNodes(pipeline.getMembersList().stream()
-            .map(DatanodeDetails::getFromProtoBuf).collect(Collectors.toList()))
-        .setNodesInOrder(pipeline.getMemberOrdersList())
-        .setCreateTimestamp(pipeline.getCreationTimeStamp())
-        .build();
+        .setState(PipelineState.fromProtobuf(pipeline.getState())).setLeaderId(
+            StringUtils.isNotEmpty(pipeline.getLeaderID()) ?
+                UUID.fromString(pipeline.getLeaderID()) : null).setNodes(
+            pipeline.getMembersList().stream().map(DatanodeDetails::getFromProtoBuf)
+                .collect(Collectors.toList())).setNodesInOrder(pipeline.getMemberOrdersList())
+        .setCreateTimestamp(pipeline.getCreationTimeStamp());
+    // TODO(maobaolong): remove this compatible purpose block after clear factor
+    int replication = 0;
+    if (pipeline.hasReplication()) {
+      replication = pipeline.getReplication();
+    } else if (pipeline.hasFactor()) {
+      replication = pipeline.getFactor().getNumber();
+    }
+    builder.setReplication(replication);
+    return builder.build();
   }
 
   @Override
@@ -316,7 +324,7 @@ public final class Pipeline {
     return new EqualsBuilder()
         .append(id, that.id)
         .append(type, that.type)
-        .append(factor, that.factor)
+        .append(replication, that.replication)
         .append(getNodes(), that.getNodes())
         .isEquals();
   }
@@ -326,7 +334,7 @@ public final class Pipeline {
     return new HashCodeBuilder()
         .append(id)
         .append(type)
-        .append(factor)
+        .append(replication)
         .append(nodeStatus)
         .toHashCode();
   }
@@ -339,7 +347,7 @@ public final class Pipeline {
     b.append(", Nodes: ");
     nodeStatus.keySet().forEach(b::append);
     b.append(", Type:").append(getType());
-    b.append(", Factor:").append(getFactor());
+    b.append(", Replication:").append(getReplication());
     b.append(", State:").append(getPipelineState());
     b.append(", leaderId:").append(getLeaderId());
     b.append(", CreationTimestamp").append(getCreationTimestamp());
@@ -361,7 +369,7 @@ public final class Pipeline {
   public static class Builder {
     private PipelineID id = null;
     private ReplicationType type = null;
-    private ReplicationFactor factor = null;
+    private int replication = 0;
     private PipelineState state = null;
     private Map<DatanodeDetails, Long> nodeStatus = null;
     private List<Integer> nodeOrder = null;
@@ -374,7 +382,7 @@ public final class Pipeline {
     public Builder(Pipeline pipeline) {
       this.id = pipeline.id;
       this.type = pipeline.type;
-      this.factor = pipeline.factor;
+      this.replication = pipeline.replication;
       this.state = pipeline.state;
       this.nodeStatus = pipeline.nodeStatus;
       this.nodesInOrder = pipeline.nodesInOrder.get();
@@ -392,8 +400,8 @@ public final class Pipeline {
       return this;
     }
 
-    public Builder setFactor(ReplicationFactor factor1) {
-      this.factor = factor1;
+    public Builder setReplication(int replication) {
+      this.replication = replication;
       return this;
     }
 
@@ -426,10 +434,9 @@ public final class Pipeline {
     public Pipeline build() {
       Preconditions.checkNotNull(id);
       Preconditions.checkNotNull(type);
-      Preconditions.checkNotNull(factor);
       Preconditions.checkNotNull(state);
       Preconditions.checkNotNull(nodeStatus);
-      Pipeline pipeline = new Pipeline(id, type, factor, state, nodeStatus);
+      Pipeline pipeline = new Pipeline(id, type, replication, state, nodeStatus);
       pipeline.setLeaderId(leaderId);
       // overwrite with original creationTimestamp
       if (creationTimestamp != null) {

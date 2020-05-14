@@ -348,7 +348,7 @@ public class BaseFreonGenerator {
                   + pipelineId));
     } else {
       pipeline = pipelines.stream()
-          .filter(p -> p.getFactor() == HddsProtos.ReplicationFactor.THREE)
+          .filter(p -> p.getReplication() == 3)
           .findFirst()
           .orElseThrow(() -> new IllegalArgumentException(
               "Pipeline ID is NOT defined, and no pipeline " +

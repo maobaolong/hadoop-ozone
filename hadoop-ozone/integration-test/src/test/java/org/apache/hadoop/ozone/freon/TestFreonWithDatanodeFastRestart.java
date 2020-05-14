@@ -18,7 +18,6 @@
 
 package org.apache.hadoop.ozone.freon;
 
-import org.apache.hadoop.hdds.client.ReplicationFactor;
 import org.apache.hadoop.hdds.client.ReplicationType;
 import org.apache.hadoop.hdds.conf.OzoneConfiguration;
 import org.apache.hadoop.ozone.MiniOzoneCluster;
@@ -110,7 +109,7 @@ public class TestFreonWithDatanodeFastRestart {
     randomKeyGenerator.setNumOfBuckets(1);
     randomKeyGenerator.setNumOfKeys(1);
     randomKeyGenerator.setType(ReplicationType.RATIS);
-    randomKeyGenerator.setFactor(ReplicationFactor.THREE);
+    randomKeyGenerator.setReplication(3);
     randomKeyGenerator.setKeySize(20971520);
     randomKeyGenerator.setValidateWrites(true);
     randomKeyGenerator.call();

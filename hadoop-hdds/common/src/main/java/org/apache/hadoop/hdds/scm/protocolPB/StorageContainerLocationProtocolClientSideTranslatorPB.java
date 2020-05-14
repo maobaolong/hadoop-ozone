@@ -130,16 +130,18 @@ public final class StorageContainerLocationProtocolClientSideTranslatorPB
    * supports replication factor of either 1 or 3.
    *
    * @param type   - Replication Type
-   * @param factor - Replication Count
+   * @param replication - Replication Count
    */
   @Override
   public ContainerWithPipeline allocateContainer(
-      HddsProtos.ReplicationType type, HddsProtos.ReplicationFactor factor,
+      HddsProtos.ReplicationType type, int replication,
       String owner) throws IOException {
 
+    // TODO(maobaolong): remove this compatible purpose block after clear factor
     ContainerRequestProto request = ContainerRequestProto.newBuilder()
         .setTraceID(TracingUtil.exportCurrentSpan())
-        .setReplicationFactor(factor)
+        .setReplication(replication)
+        .setReplicationFactor(HddsProtos.ReplicationFactor.valueOf(replication))
         .setReplicationType(type)
         .setOwner(owner)
         .build();
@@ -321,17 +323,19 @@ public final class StorageContainerLocationProtocolClientSideTranslatorPB
    * Creates a replication pipeline of a specified type.
    *
    * @param replicationType - replication type
-   * @param factor          - factor 1 or 3
+   * @param replication          - factor 1 or 3
    * @param nodePool        - optional machine list to build a pipeline.
    */
   @Override
   public Pipeline createReplicationPipeline(HddsProtos.ReplicationType
-      replicationType, HddsProtos.ReplicationFactor factor, HddsProtos
+      replicationType, int replication, HddsProtos
       .NodePool nodePool) throws IOException {
+    // TODO(maobaolong): remove this compatible purpose block after clear factor
     PipelineRequestProto request = PipelineRequestProto.newBuilder()
         .setTraceID(TracingUtil.exportCurrentSpan())
         .setNodePool(nodePool)
-        .setReplicationFactor(factor)
+        .setReplication(replication)
+        .setReplicationFactor(HddsProtos.ReplicationFactor.valueOf(replication))
         .setReplicationType(replicationType)
         .build();
 

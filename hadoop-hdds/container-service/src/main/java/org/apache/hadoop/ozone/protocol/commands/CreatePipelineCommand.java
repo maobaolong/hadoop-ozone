@@ -18,13 +18,14 @@ package org.apache.hadoop.ozone.protocol.commands;
 
 import com.google.common.base.Preconditions;
 import org.apache.hadoop.hdds.protocol.DatanodeDetails;
+import org.apache.hadoop.hdds.protocol.proto.HddsProtos;
+import org.apache.hadoop.hdds.protocol.proto.StorageContainerDatanodeProtocolProtos;
 import org.apache.hadoop.hdds.protocol.proto.
     StorageContainerDatanodeProtocolProtos.CreatePipelineCommandProto;
 import org.apache.hadoop.hdds.protocol.proto.
     StorageContainerDatanodeProtocolProtos.SCMCommandProto;
 import org.apache.hadoop.hdds.scm.pipeline.PipelineID;
 import org.apache.hadoop.hdds.protocol.proto.HddsProtos.ReplicationType;
-import org.apache.hadoop.hdds.protocol.proto.HddsProtos.ReplicationFactor;
 
 import java.util.List;
 import java.util.stream.Collectors;
@@ -36,26 +37,26 @@ public class CreatePipelineCommand
     extends SCMCommand<CreatePipelineCommandProto> {
 
   private final PipelineID pipelineID;
-  private final ReplicationFactor factor;
+  private final int replication;
   private final ReplicationType type;
   private final List<DatanodeDetails> nodelist;
 
   public CreatePipelineCommand(final PipelineID pipelineID,
-      final ReplicationType type, final ReplicationFactor factor,
+      final ReplicationType type, int replication,
       final List<DatanodeDetails> datanodeList) {
     super();
     this.pipelineID = pipelineID;
-    this.factor = factor;
+    this.replication = replication;
     this.type = type;
     this.nodelist = datanodeList;
   }
 
   public CreatePipelineCommand(long cmdId, final PipelineID pipelineID,
-      final ReplicationType type, final ReplicationFactor factor,
+      final ReplicationType type, int replication,
       final List<DatanodeDetails> datanodeList) {
     super(cmdId);
     this.pipelineID = pipelineID;
-    this.factor = factor;
+    this.replication = replication;
     this.type = type;
     this.nodelist = datanodeList;
   }
@@ -72,23 +73,34 @@ public class CreatePipelineCommand
 
   @Override
   public CreatePipelineCommandProto getProto() {
+    // TODO(maobaolong): remove this compatible purpose block after clear factor
     return CreatePipelineCommandProto.newBuilder()
         .setCmdId(getId())
         .setPipelineID(pipelineID.getProtobuf())
-        .setFactor(factor)
+        .setReplication(replication)
+        .setFactor(HddsProtos.ReplicationFactor.valueOf(replication))
         .setType(type)
-        .addAllDatanode(nodelist.stream()
-            .map(DatanodeDetails::getProtoBufMessage)
-            .collect(Collectors.toList()))
+        .addAllDatanode(
+            nodelist.stream().map(DatanodeDetails::getProtoBufMessage)
+                .collect(Collectors.toList()))
         .build();
   }
 
   public static CreatePipelineCommand getFromProtobuf(
       CreatePipelineCommandProto createPipelineProto) {
     Preconditions.checkNotNull(createPipelineProto);
+
+    // TODO(maobaolong): remove this compatible purpose block after clear factor
+    int replication = 0;
+    if (createPipelineProto.hasReplication()) {
+      replication = createPipelineProto.getReplication();
+    } else if(createPipelineProto.hasFactor()) {
+      replication = createPipelineProto.getFactor().getNumber();
+    }
+
     return new CreatePipelineCommand(createPipelineProto.getCmdId(),
         PipelineID.getFromProtobuf(createPipelineProto.getPipelineID()),
-        createPipelineProto.getType(), createPipelineProto.getFactor(),
+        createPipelineProto.getType(), replication,
         createPipelineProto.getDatanodeList().stream()
             .map(DatanodeDetails::getFromProtoBuf)
             .collect(Collectors.toList()));

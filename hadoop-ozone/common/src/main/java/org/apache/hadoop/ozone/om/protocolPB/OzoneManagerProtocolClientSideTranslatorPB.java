@@ -25,6 +25,7 @@ import java.util.stream.Collectors;
 
 import org.apache.hadoop.hdds.annotation.InterfaceAudience;
 import org.apache.hadoop.hdds.conf.ConfigurationSource;
+import org.apache.hadoop.hdds.protocol.proto.HddsProtos;
 import org.apache.hadoop.hdds.scm.container.common.helpers.ExcludeList;
 import org.apache.hadoop.hdds.tracing.TracingUtil;
 import org.apache.hadoop.io.Text;
@@ -769,9 +770,9 @@ public final class OzoneManagerProtocolClientSideTranslatorPB
           OzoneAcl.toProtobuf(a)).collect(Collectors.toList()));
     }
 
-    if (args.getFactor() != null) {
-      keyArgs.setFactor(args.getFactor());
-    }
+    keyArgs.setReplication(args.getReplication());
+    // TODO(maobaolong): remove this compatible purpose block after clear factor
+    keyArgs.setFactor(HddsProtos.ReplicationFactor.valueOf(args.getReplication()));
 
     if (args.getType() != null) {
       keyArgs.setType(args.getType());
@@ -828,9 +829,9 @@ public final class OzoneManagerProtocolClientSideTranslatorPB
         .setKeyName(args.getKeyName())
         .setDataSize(args.getDataSize());
 
-    if (args.getFactor() != null) {
-      keyArgs.setFactor(args.getFactor());
-    }
+    keyArgs.setReplication(args.getReplication());
+    // TODO(maobaolong): remove this compatible purpose block after clear factor
+    keyArgs.setFactor(HddsProtos.ReplicationFactor.valueOf(args.getReplication()));
 
     if (args.getType() != null) {
       keyArgs.setType(args.getType());
@@ -1021,11 +1022,13 @@ public final class OzoneManagerProtocolClientSideTranslatorPB
     MultipartInfoInitiateRequest.Builder multipartInfoInitiateRequest =
         MultipartInfoInitiateRequest.newBuilder();
 
+    // TODO(maobaolong): remove this compatible purpose block after clear factor
     KeyArgs.Builder keyArgs = KeyArgs.newBuilder()
         .setVolumeName(omKeyArgs.getVolumeName())
         .setBucketName(omKeyArgs.getBucketName())
         .setKeyName(omKeyArgs.getKeyName())
-        .setFactor(omKeyArgs.getFactor())
+        .setReplication(omKeyArgs.getReplication())
+        .setFactor(HddsProtos.ReplicationFactor.valueOf(omKeyArgs.getReplication()))
         .addAllAcls(omKeyArgs.getAcls().stream().map(a ->
             OzoneAcl.toProtobuf(a)).collect(Collectors.toList()))
         .setType(omKeyArgs.getType());
@@ -1158,7 +1161,7 @@ public final class OzoneManagerProtocolClientSideTranslatorPB
 
 
     OmMultipartUploadListParts omMultipartUploadListParts =
-        new OmMultipartUploadListParts(response.getType(), response.getFactor(),
+        new OmMultipartUploadListParts(response.getType(), response.getReplication(),
             response.getNextPartNumberMarker(), response.getIsTruncated());
     omMultipartUploadListParts.addProtoPartList(response.getPartsListList());
 
@@ -1194,7 +1197,7 @@ public final class OzoneManagerProtocolClientSideTranslatorPB
                 proto.getUploadId(),
                 Instant.ofEpochMilli(proto.getCreationTime()),
                 proto.getType(),
-                proto.getFactor()
+                proto.getReplication()
             ))
             .collect(Collectors.toList());
 
@@ -1527,13 +1530,15 @@ public final class OzoneManagerProtocolClientSideTranslatorPB
   @Override
   public OpenKeySession createFile(OmKeyArgs args,
       boolean overWrite, boolean recursive) throws IOException {
+    // TODO(maobaolong): remove this compatible purpose block after clear factor
     KeyArgs keyArgs = KeyArgs.newBuilder()
         .setVolumeName(args.getVolumeName())
         .setBucketName(args.getBucketName())
         .setKeyName(args.getKeyName())
         .setDataSize(args.getDataSize())
         .setType(args.getType())
-        .setFactor(args.getFactor())
+        .setReplication(args.getReplication())
+        .setFactor(HddsProtos.ReplicationFactor.valueOf(args.getReplication()))
         .addAllAcls(args.getAcls().stream().map(a ->
             OzoneAcl.toProtobuf(a)).collect(Collectors.toList()))
         .build();

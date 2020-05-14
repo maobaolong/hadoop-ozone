@@ -42,7 +42,7 @@ public class ReconPipelineFactory extends PipelineFactory {
   static class ReconPipelineProvider extends PipelineProvider {
 
     @Override
-    public Pipeline create(HddsProtos.ReplicationFactor factor){
+    public Pipeline create(int replication){
       // We don't expect this to be called at all. But adding this as a red
       // flag for troubleshooting.
       throw new UnsupportedOperationException(
@@ -50,7 +50,7 @@ public class ReconPipelineFactory extends PipelineFactory {
     }
 
     @Override
-    public Pipeline create(HddsProtos.ReplicationFactor factor,
+    public Pipeline create(int replication,
                            List<DatanodeDetails> nodes) {
       throw new UnsupportedOperationException(
           "Trying to create pipeline in Recon, which is prohibited!");
