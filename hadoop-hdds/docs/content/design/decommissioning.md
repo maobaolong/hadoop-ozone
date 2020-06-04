@@ -21,11 +21,17 @@ status: current
 author: Anu Engineer, Marton Elek, Stephen O'Donnell
 ---
 
+
 # Abstract
+
+
 
 The goal of decommissioning is to turn off a selected set of machines without data loss. It may or may not require to move the existing replicas of the containers to other nodes.
 
-There are two main classes of the decommissioning:
+There are two mai
+
+
+n classes of the decommissioning:
 
  * __Maintenance mode__: where the node is expected to be back after a while. It may not require replication of containers if enough replicas are available from other nodes (as we expect to have the current replicas after the restart.)
 
@@ -44,6 +50,10 @@ Goals:
 # Introduction
 
 Ozone is a highly available file system that relies on commodity hardware. In other words, Ozone is designed to handle failures of these nodes all the time.
+> [name=maobaolong],,,,
+ne is designed to handle failures of these nodes all the time.
+
+The Storage Container Manager(SCM) is designed to monitor the node health and replicate blocks and containers as needed.
 
 The Storage Container Manager(SCM) is designed to monitor the node health and replicate blocks and containers as needed.
 
@@ -86,7 +96,6 @@ Here are some illustrative examples:
 4. The semantics of decommissioning means that as long as we can find copies of containers in other machines, we can technically get away with calling decommission complete. Hence this clarification node; in the ordinary course of action; each decommission will create a replication flow for each container we have; however, it is possible to complete a decommission of a data node, even if we get a failure of the  data node being decommissioned. As long as we can find the other datanodes to replicate from and get the number of replicas needed backup to expected count we are good.
 
 5. Let us say we have a copy of a container replica on Machine A, B, and C. It is possible to decommission all three machines at the same time, as decommissioning is just a status indicator of the data node and until we finish the decommissioning process.
-
 
 The user-visible features for both of these  are very similar:
 
