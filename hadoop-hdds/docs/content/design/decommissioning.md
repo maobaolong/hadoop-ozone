@@ -26,7 +26,9 @@ author: Anu Engineer, Marton Elek, Stephen O'Donnell
 
 
 
-The goal of decommissioning is to turn off a selected set of machines without data loss. It may or may not require to move the existing replicas of the containers to other nodes.
+The goal of decommis----------------sioning is to turn off a selec
+
+ted set of machines without data loss. It may or may not require to move the existing replicas of the containers to other nodes.
 
 There are two mai
 
