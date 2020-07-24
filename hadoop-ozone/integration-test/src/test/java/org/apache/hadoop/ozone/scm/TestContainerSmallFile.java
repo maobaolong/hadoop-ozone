@@ -170,7 +170,7 @@ public class TestContainerSmallFile {
             StorageClassConverter.convert(
                 null, HddsProtos.ReplicationFactor.ONE,
                 SCMTestUtils.getReplicationType(ozoneConfig))
-            );
+        );
     XceiverClientSpi client = xceiverClientManager
         .acquireClient(container.getPipeline());
     ContainerProtocolCalls.createContainer(client,
