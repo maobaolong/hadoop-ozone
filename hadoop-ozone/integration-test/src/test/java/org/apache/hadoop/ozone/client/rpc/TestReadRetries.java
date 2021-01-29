@@ -17,54 +17,59 @@
 
 package org.apache.hadoop.ozone.client.rpc;
 
+import java.io.IOException;
+import java.util.HashMap;
+import java.util.List;
+import java.util.UUID;
+
 import org.apache.hadoop.hdds.client.ReplicationFactor;
 import org.apache.hadoop.hdds.client.ReplicationType;
 import org.apache.hadoop.hdds.conf.OzoneConfiguration;
 import org.apache.hadoop.hdds.protocol.DatanodeDetails;
 import org.apache.hadoop.hdds.protocol.proto.HddsProtos;
 import org.apache.hadoop.hdds.scm.ScmConfigKeys;
-import org.apache.hadoop.hdds.scm.XceiverClientManager;
+import org.apache.hadoop.hdds.scm.XceiverClientFactory;
 import org.apache.hadoop.hdds.scm.XceiverClientRatis;
 import org.apache.hadoop.hdds.scm.XceiverClientSpi;
 import org.apache.hadoop.hdds.scm.container.ContainerID;
 import org.apache.hadoop.hdds.scm.container.ContainerInfo;
 import org.apache.hadoop.hdds.scm.pipeline.Pipeline;
-import org.apache.hadoop.hdds.scm.protocolPB
-    .StorageContainerLocationProtocolClientSideTranslatorPB;
+import org.apache.hadoop.hdds.scm.protocolPB.StorageContainerLocationProtocolClientSideTranslatorPB;
 import org.apache.hadoop.ozone.MiniOzoneCluster;
-import org.apache.hadoop.ozone.client.OzoneKey;
-import org.apache.hadoop.ozone.client.OzoneVolume;
-import org.apache.hadoop.ozone.client.OzoneBucket;
-import org.apache.hadoop.ozone.client.OzoneKeyDetails;
-import org.apache.hadoop.ozone.client.OzoneKeyLocation;
 import org.apache.hadoop.ozone.client.ObjectStore;
+import org.apache.hadoop.ozone.client.OzoneBucket;
 import org.apache.hadoop.ozone.client.OzoneClient;
 import org.apache.hadoop.ozone.client.OzoneClientFactory;
+import org.apache.hadoop.ozone.client.OzoneKey;
+import org.apache.hadoop.ozone.client.OzoneKeyDetails;
+import org.apache.hadoop.ozone.client.OzoneKeyLocation;
+import org.apache.hadoop.ozone.client.OzoneVolume;
 import org.apache.hadoop.ozone.client.io.KeyOutputStream;
 import org.apache.hadoop.ozone.client.io.OzoneInputStream;
 import org.apache.hadoop.ozone.client.io.OzoneOutputStream;
 import org.apache.hadoop.ozone.om.OzoneManager;
 import org.apache.hadoop.ozone.om.helpers.OmKeyArgs;
 import org.apache.hadoop.ozone.om.helpers.OmKeyLocationInfo;
-import org.junit.Rule;
-import org.junit.BeforeClass;
+
 import org.junit.AfterClass;
 import org.junit.Assert;
-import org.junit.Test;
-
-import org.junit.rules.ExpectedException;
-
-import java.io.IOException;
-import java.util.HashMap;
-import java.util.List;
-import java.util.UUID;
-
 import static org.junit.Assert.fail;
+import org.junit.BeforeClass;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.rules.ExpectedException;
+import org.junit.rules.Timeout;
 
 /**
  * Test read retries from multiple nodes in the pipeline.
  */
 public class TestReadRetries {
+
+  /**
+    * Set a timeout for each test.
+    */
+  @Rule
+  public Timeout timeout = new Timeout(300000);
 
   @Rule
   public ExpectedException thrown = ExpectedException.none();
@@ -88,10 +93,12 @@ public class TestReadRetries {
     OzoneConfiguration conf = new OzoneConfiguration();
     conf.setInt(ScmConfigKeys.OZONE_SCM_PIPELINE_OWNER_CONTAINER_COUNT, 1);
     cluster = MiniOzoneCluster.newBuilder(conf)
-        .setNumDatanodes(10)
+        .setNumDatanodes(3)
         .setScmId(SCM_ID)
         .build();
     cluster.waitForClusterToBeReady();
+    cluster.waitForPipelineTobeReady(HddsProtos.ReplicationFactor.THREE,
+            180000);
     ozClient = OzoneClientFactory.getRpcClient(conf);
     store = ozClient.getObjectStore();
     storageContainerLocationClient =
@@ -138,7 +145,7 @@ public class TestReadRetries {
             ReplicationFactor.THREE, new HashMap<>());
     KeyOutputStream groupOutputStream =
         (KeyOutputStream) out.getOutputStream();
-    XceiverClientManager manager = groupOutputStream.getXceiverClientManager();
+    XceiverClientFactory factory = groupOutputStream.getXceiverClientFactory();
     out.write(value.getBytes());
     out.close();
     // First, confirm the key info from the client matches the info in OM.
@@ -170,29 +177,20 @@ public class TestReadRetries {
     DatanodeDetails datanodeDetails = datanodes.get(0);
     Assert.assertNotNull(datanodeDetails);
 
-    XceiverClientSpi clientSpi = manager.acquireClient(pipeline);
+    XceiverClientSpi clientSpi = factory.acquireClient(pipeline);
     Assert.assertTrue(clientSpi instanceof XceiverClientRatis);
     XceiverClientRatis ratisClient = (XceiverClientRatis)clientSpi;
 
     ratisClient.watchForCommit(keyInfo.getBlockCommitSequenceId());
     // shutdown the datanode
     cluster.shutdownHddsDatanode(datanodeDetails);
-
-    Assert.assertTrue(container.getState()
-        == HddsProtos.LifeCycleState.OPEN);
-    // try to read, this shouls be successful
+    // try to read, this should be successful
     readKey(bucket, keyName, value);
-
-    Assert.assertTrue(container.getState()
-        == HddsProtos.LifeCycleState.OPEN);
     // shutdown the second datanode
     datanodeDetails = datanodes.get(1);
     cluster.shutdownHddsDatanode(datanodeDetails);
-    Assert.assertTrue(container.getState()
-        == HddsProtos.LifeCycleState.OPEN);
 
-    // the container is open and with loss of 2 nodes we still should be able
-    // to read via Standalone protocol
+    // we still should be able to read via Standalone protocol
     // try to read
     readKey(bucket, keyName, value);
 
@@ -207,7 +205,7 @@ public class TestReadRetries {
       // it should throw an ioException as none of the servers
       // are available
     }
-    manager.releaseClient(clientSpi, false);
+    factory.releaseClient(clientSpi, false);
   }
 
   private void readKey(OzoneBucket bucket, String keyName, String data)

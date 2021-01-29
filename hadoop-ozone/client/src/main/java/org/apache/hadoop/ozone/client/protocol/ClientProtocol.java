@@ -18,31 +18,35 @@
 
 package org.apache.hadoop.ozone.client.protocol;
 
-import com.google.common.annotations.VisibleForTesting;
-import org.apache.hadoop.crypto.key.KeyProvider;
-import org.apache.hadoop.hdds.protocol.StorageType;
-import org.apache.hadoop.io.Text;
-import org.apache.hadoop.ozone.OzoneAcl;
-import org.apache.hadoop.ozone.client.*;
-import org.apache.hadoop.hdds.client.OzoneQuota;
-import org.apache.hadoop.hdds.client.ReplicationFactor;
-import org.apache.hadoop.hdds.client.ReplicationType;
-import org.apache.hadoop.ozone.client.io.OzoneInputStream;
-import org.apache.hadoop.ozone.client.io.OzoneOutputStream;
-import org.apache.hadoop.ozone.om.exceptions.OMException;
-import org.apache.hadoop.ozone.om.ha.OMFailoverProxyProvider;
-import org.apache.hadoop.ozone.om.OMConfigKeys;
-import org.apache.hadoop.ozone.om.helpers.OmMultipartInfo;
-import org.apache.hadoop.ozone.om.helpers.OmMultipartUploadCompleteInfo;
-
 import java.io.IOException;
 import java.net.URI;
 import java.util.List;
 import java.util.Map;
 
+import org.apache.hadoop.crypto.key.KeyProvider;
+import org.apache.hadoop.hdds.client.ReplicationFactor;
+import org.apache.hadoop.hdds.client.ReplicationType;
+import org.apache.hadoop.hdds.protocol.StorageType;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.ozone.OzoneAcl;
+import org.apache.hadoop.ozone.client.BucketArgs;
+import org.apache.hadoop.ozone.client.OzoneBucket;
+import org.apache.hadoop.ozone.client.OzoneKey;
+import org.apache.hadoop.ozone.client.OzoneKeyDetails;
+import org.apache.hadoop.ozone.client.OzoneMultipartUploadList;
+import org.apache.hadoop.ozone.client.OzoneMultipartUploadPartListParts;
+import org.apache.hadoop.ozone.client.OzoneVolume;
+import org.apache.hadoop.ozone.client.VolumeArgs;
+import org.apache.hadoop.ozone.client.io.OzoneInputStream;
+import org.apache.hadoop.ozone.client.io.OzoneOutputStream;
+import org.apache.hadoop.ozone.om.OMConfigKeys;
+import org.apache.hadoop.ozone.om.exceptions.OMException;
+import org.apache.hadoop.ozone.om.helpers.OmMultipartInfo;
+import org.apache.hadoop.ozone.om.helpers.OmMultipartUploadCompleteInfo;
 import org.apache.hadoop.ozone.om.helpers.OzoneFileStatus;
 import org.apache.hadoop.ozone.om.helpers.RepeatedOmKeyInfo;
 import org.apache.hadoop.ozone.om.helpers.S3SecretValue;
+import org.apache.hadoop.ozone.om.protocol.OzoneManagerProtocol;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OMRoleInfo;
 import org.apache.hadoop.ozone.security.OzoneTokenIdentifier;
 import org.apache.hadoop.ozone.security.acl.OzoneObj;
@@ -54,8 +58,7 @@ import org.apache.hadoop.security.token.Token;
  * and perform client operations. The protocol used for communication is
  * determined by the implementation class specified by
  * property <code>ozone.client.protocol</code>. The build-in implementation
- * includes: {@link org.apache.hadoop.ozone.client.rpc.RpcClient} for RPC and
- * {@link  org.apache.hadoop.ozone.client.rest.RestClient} for REST.
+ * includes: {@link org.apache.hadoop.ozone.client.rpc.RpcClient} for RPC.
  */
 @KerberosInfo(serverPrincipal = OMConfigKeys.OZONE_OM_KERBEROS_PRINCIPAL_KEY)
 public interface ClientProtocol {
@@ -88,18 +91,21 @@ public interface ClientProtocol {
    * Sets the owner of volume.
    * @param volumeName Name of the Volume
    * @param owner to be set for the Volume
+   * @return true if operation succeeded, false if specified user is
+   *         already the owner.
    * @throws IOException
    */
-  void setVolumeOwner(String volumeName, String owner) throws IOException;
+  boolean setVolumeOwner(String volumeName, String owner) throws IOException;
 
   /**
    * Set Volume Quota.
    * @param volumeName Name of the Volume
-   * @param quota Quota to be set for the Volume
+   * @param quotaInNamespace The maximum number of buckets in this volume.
+   * @param quotaInBytes The maximum size this volume can be used.
    * @throws IOException
    */
-  void setVolumeQuota(String volumeName, OzoneQuota quota)
-      throws IOException;
+  void setVolumeQuota(String volumeName, long quotaInNamespace,
+      long quotaInBytes) throws IOException;
 
   /**
    * Returns {@link OzoneVolume}.
@@ -289,6 +295,17 @@ public interface ClientProtocol {
       throws IOException;
 
   /**
+   * Deletes keys through the list.
+   * @param volumeName Name of the Volume
+   * @param bucketName Name of the Bucket
+   * @param keyNameList List of the Key
+   * @throws IOException
+   */
+  void deleteKeys(String volumeName, String bucketName,
+                  List<String> keyNameList)
+      throws IOException;
+
+  /**
    * Renames an existing key within a bucket.
    * @param volumeName Name of the Volume
    * @param bucketName Name of the Bucket
@@ -297,7 +314,17 @@ public interface ClientProtocol {
    * @throws IOException
    */
   void renameKey(String volumeName, String bucketName, String fromKeyName,
-      String toKeyName) throws IOException;
+                 String toKeyName) throws IOException;
+
+  /**
+   * Renames existing keys within a bucket.
+   * @param volumeName Name of the Volume
+   * @param bucketName Name of the Bucket
+   * @param keyMap The key is original key name nad value is new key name.
+   * @throws IOException
+   */
+  void renameKeys(String volumeName, String bucketName,
+                  Map<String, String> keyMap) throws IOException;
 
   /**
    * Returns list of Keys in {Volume/Bucket} that matches the keyPrefix,
@@ -479,9 +506,6 @@ public interface ClientProtocol {
    */
   S3SecretValue getS3Secret(String kerberosID) throws IOException;
 
-  @VisibleForTesting
-  OMFailoverProxyProvider getOMProxyProvider();
-
   /**
    * Get KMS client provider.
    * @return KMS client provider.
@@ -627,4 +651,19 @@ public interface ClientProtocol {
    * */
   List<OzoneAcl> getAcl(OzoneObj obj) throws IOException;
 
+  /**
+   * Getter for OzoneManagerClient.
+   */
+  OzoneManagerProtocol getOzoneManagerClient();
+
+  /**
+   * Set Bucket Quota.
+   * @param volumeName Name of the Volume.
+   * @param bucketName Name of the Bucket.
+   * @param quotaInBytes The maximum size this buckets can be used.
+   * @param quotaInNamespace The maximum number of keys in this bucket.
+   * @throws IOException
+   */
+  void setBucketQuota(String volumeName, String bucketName,
+      long quotaInNamespace, long quotaInBytes) throws IOException;
 }

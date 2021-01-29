@@ -45,12 +45,20 @@ import org.apache.hadoop.ozone.container.common.SCMTestUtils;
 import org.junit.AfterClass;
 import org.junit.Assert;
 import org.junit.BeforeClass;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.Timeout;
 
 /**
  * Test Container calls.
  */
 public class TestGetCommittedBlockLengthAndPutKey {
+
+  /**
+    * Set a timeout for each test.
+    */
+  @Rule
+  public Timeout timeout = new Timeout(300000);
 
   private static MiniOzoneCluster cluster;
   private static OzoneConfiguration ozoneConfig;
@@ -105,7 +113,7 @@ public class TestGetCommittedBlockLengthAndPutKey {
             .getPutBlockRequest(pipeline, writeChunkRequest.getWriteChunk());
     client.sendCommand(putKeyRequest);
     response = ContainerProtocolCalls
-        .getCommittedBlockLength(client, blockID);
+        .getCommittedBlockLength(client, blockID, null);
     // make sure the block ids in the request and response are same.
     Assert.assertTrue(
         BlockID.getFromProtobuf(response.getBlockID()).equals(blockID));
@@ -129,7 +137,7 @@ public class TestGetCommittedBlockLengthAndPutKey {
     try {
       // There is no block written inside the container. The request should
       // fail.
-      ContainerProtocolCalls.getCommittedBlockLength(client, blockID);
+      ContainerProtocolCalls.getCommittedBlockLength(client, blockID, null);
       Assert.fail("Expected exception not thrown");
     } catch (StorageContainerException sce) {
       Assert.assertTrue(sce.getMessage().contains("Unable to find the block"));

@@ -30,6 +30,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.EnumMap;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -46,6 +47,7 @@ import org.apache.hadoop.hdds.HddsConfigKeys;
 import org.apache.hadoop.hdds.protocol.DatanodeDetails;
 import org.apache.hadoop.hdds.protocol.datanode.proto.ContainerProtos.ContainerCommandRequestProto;
 import org.apache.hadoop.hdds.protocol.proto.HddsProtos;
+import org.apache.hadoop.hdds.protocol.proto.StorageContainerDatanodeProtocolProtos.MetadataStorageReportProto;
 import org.apache.hadoop.hdds.protocol.proto.StorageContainerDatanodeProtocolProtos.ClosePipelineInfo;
 import org.apache.hadoop.hdds.protocol.proto.StorageContainerDatanodeProtocolProtos.PipelineAction;
 import org.apache.hadoop.hdds.protocol.proto.StorageContainerDatanodeProtocolProtos.PipelineReport;
@@ -59,11 +61,14 @@ import org.apache.hadoop.hdds.utils.HddsServerUtil;
 import org.apache.hadoop.ozone.OzoneConfigKeys;
 import org.apache.hadoop.ozone.OzoneConsts;
 import org.apache.hadoop.ozone.container.common.impl.ContainerData;
+import org.apache.hadoop.ozone.container.common.impl.StorageLocationReport;
 import org.apache.hadoop.ozone.container.common.interfaces.ContainerDispatcher;
 import org.apache.hadoop.ozone.container.common.statemachine.StateContext;
 import org.apache.hadoop.ozone.container.common.transport.server.XceiverServerSpi;
 import org.apache.hadoop.ozone.container.common.volume.MutableVolumeSet;
 import org.apache.hadoop.ozone.container.ozoneimpl.ContainerController;
+import org.apache.hadoop.fs.StorageType;
+import org.apache.hadoop.hdfs.server.datanode.StorageLocation;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
@@ -79,23 +84,22 @@ import org.apache.ratis.grpc.GrpcTlsConfig;
 import org.apache.ratis.netty.NettyConfigKeys;
 import org.apache.ratis.proto.RaftProtos;
 import org.apache.ratis.proto.RaftProtos.RoleInfoProto;
+import org.apache.ratis.protocol.exceptions.NotLeaderException;
+import org.apache.ratis.protocol.exceptions.StateMachineException;
 import org.apache.ratis.protocol.ClientId;
 import org.apache.ratis.protocol.GroupInfoReply;
 import org.apache.ratis.protocol.GroupInfoRequest;
 import org.apache.ratis.protocol.GroupManagementRequest;
-import org.apache.ratis.protocol.NotLeaderException;
 import org.apache.ratis.protocol.RaftClientReply;
 import org.apache.ratis.protocol.RaftClientRequest;
 import org.apache.ratis.protocol.RaftGroup;
 import org.apache.ratis.protocol.RaftGroupId;
 import org.apache.ratis.protocol.RaftGroupMemberId;
 import org.apache.ratis.protocol.RaftPeerId;
-import org.apache.ratis.protocol.StateMachineException;
 import org.apache.ratis.rpc.RpcType;
 import org.apache.ratis.rpc.SupportedRpcType;
 import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.server.RaftServerConfigKeys;
-import org.apache.ratis.server.impl.RaftServerProxy;
 import org.apache.ratis.server.protocol.TermIndex;
 import org.apache.ratis.util.SizeInBytes;
 import org.apache.ratis.util.TimeDuration;
@@ -111,6 +115,9 @@ public final class XceiverServerRatis implements XceiverServerSpi {
   private static final Logger LOG = LoggerFactory
       .getLogger(XceiverServerRatis.class);
   private static final AtomicLong CALL_ID_COUNTER = new AtomicLong();
+  private static final List<Integer> DEFAULT_PRIORITY_LIST =
+      new ArrayList<>(
+          Collections.nCopies(HddsProtos.ReplicationFactor.THREE_VALUE, 0));
 
   private static long nextCallId() {
     return CALL_ID_COUNTER.getAndIncrement() & Long.MAX_VALUE;
@@ -135,6 +142,12 @@ public final class XceiverServerRatis implements XceiverServerSpi {
   private Map<RaftGroupId, Boolean> groupLeaderMap = new ConcurrentHashMap<>();
   // Timeout used while calling submitRequest directly.
   private long requestTimeout;
+  private boolean shouldDeleteRatisLogDirectory;
+
+  /**
+   * Maintains a list of active volumes per StorageType.
+   */
+  private EnumMap<StorageType, List<String>> ratisVolumeMap;
 
   private XceiverServerRatis(DatanodeDetails dd, int port,
       ContainerDispatcher dispatcher, ContainerController containerController,
@@ -150,6 +163,12 @@ public final class XceiverServerRatis implements XceiverServerSpi {
     this.containerController = containerController;
     this.raftPeerId = RatisHelper.toRaftPeerId(dd);
     chunkExecutors = createChunkExecutors(conf);
+    nodeFailureTimeoutMs =
+            conf.getObject(DatanodeRatisServerConfig.class)
+                    .getFollowerSlownessTimeout();
+    shouldDeleteRatisLogDirectory =
+            conf.getObject(DatanodeRatisServerConfig.class)
+                    .shouldDeleteRatisLogDirectory();
 
     RaftServer.Builder builder =
         RaftServer.newBuilder().setServerId(raftPeerId)
@@ -163,6 +182,7 @@ public final class XceiverServerRatis implements XceiverServerSpi {
         HddsConfigKeys.HDDS_DATANODE_RATIS_SERVER_REQUEST_TIMEOUT,
         HddsConfigKeys.HDDS_DATANODE_RATIS_SERVER_REQUEST_TIMEOUT_DEFAULT,
         TimeUnit.MILLISECONDS);
+    initializeRatisVolumeMap();
   }
 
   private ContainerStateMachine getStateMachine(RaftGroupId gid) {
@@ -199,6 +219,21 @@ public final class XceiverServerRatis implements XceiverServerSpi {
         TimeDuration.valueOf(duration, timeUnit);
     RaftServerConfigKeys.Log.StateMachineData
         .setSyncTimeout(properties, dataSyncTimeout);
+    // typically a pipeline close will be initiated after a node failure
+    // timeout from Ratis in case a follower does not respond.
+    // By this time, all the writeStateMachine calls should be stopped
+    // and IOs should fail.
+    // Even if the leader is not able to complete write calls within
+    // the timeout seconds, it should just fail the operation and trigger
+    // pipeline close. failing the writeStateMachine call with limited retries
+    // will ensure even the leader initiates a pipeline close if its not
+    // able to complete write in the timeout configured.
+
+    // NOTE : the default value for the retry count in ratis is -1,
+    // which means retry indefinitely.
+    RaftServerConfigKeys.Log.StateMachineData
+            .setSyncTimeoutRetry(properties, (int) nodeFailureTimeoutMs /
+                    dataSyncTimeout.toIntExact(TimeUnit.MILLISECONDS));
 
     // set timeout for a retry cache entry
     setTimeoutForRetryCache(properties);
@@ -209,13 +244,13 @@ public final class XceiverServerRatis implements XceiverServerSpi {
     // Set the maximum cache segments
     RaftServerConfigKeys.Log.setSegmentCacheNumMax(properties, 2);
 
-    // set the node failure timeout
-    setNodeFailureTimeout(properties);
-
     // Set the ratis storage directory
-    String storageDir = HddsServerUtil.getOzoneDatanodeRatisDirectory(conf);
-    RaftServerConfigKeys.setStorageDir(properties,
-        Collections.singletonList(new File(storageDir)));
+    Collection<String> storageDirPaths =
+            HddsServerUtil.getOzoneDatanodeRatisDirectory(conf);
+    List<File> storageDirs= new ArrayList<>(storageDirPaths.size());
+    storageDirPaths.stream().forEach(d -> storageDirs.add(new File(d)));
+
+    RaftServerConfigKeys.setStorageDir(properties, storageDirs);
 
     // For grpc set the maximum message size
     GrpcConfigKeys.setMessageSizeMax(properties,
@@ -282,13 +317,6 @@ public final class XceiverServerRatis implements XceiverServerSpi {
     RatisHelper.createRaftServerProperties(conf, properties);
 
     return properties;
-  }
-
-  private void setNodeFailureTimeout(RaftProperties properties) {
-    nodeFailureTimeoutMs =
-        conf.getObject(DatanodeRatisServerConfig.class)
-            .getFollowerSlownessTimeout();
-
   }
 
   private void setRatisLeaderElectionTimeout(RaftProperties properties) {
@@ -409,12 +437,14 @@ public final class XceiverServerRatis implements XceiverServerSpi {
   // In summary:
   // authenticate from server to client is via TLS.
   // authenticate from client to server is via block token (or container token).
+  // DN Ratis server act as both SSL client and server and we must pass TLS
+  // configuration for both.
   static GrpcTlsConfig createTlsServerConfigForDN(SecurityConfig conf,
       CertificateClient caClient) {
     if (conf.isSecurityEnabled() && conf.isGrpcTlsEnabled()) {
       return new GrpcTlsConfig(
           caClient.getPrivateKey(), caClient.getCertificate(),
-          null, false);
+          caClient.getCACertificate(), false);
     }
     return null;
   }
@@ -429,9 +459,9 @@ public final class XceiverServerRatis implements XceiverServerSpi {
       }
       server.start();
 
-      int realPort =
-          ((RaftServerProxy) server).getServerRpc().getInetSocketAddress()
-              .getPort();
+      int realPort = server.getServerRpc()
+          .getInetSocketAddress()
+          .getPort();
 
       if (port == 0) {
         LOG.info("{} {} is started using port {}", getClass().getSimpleName(),
@@ -485,6 +515,15 @@ public final class XceiverServerRatis implements XceiverServerSpi {
     return server;
   }
 
+  public RaftServer.Division getServerDivision() throws IOException {
+    return getServerDivision(server.getGroupIds().iterator().next());
+  }
+
+  public RaftServer.Division getServerDivision(RaftGroupId id)
+      throws IOException {
+    return server.getDivision(id);
+  }
+
   private void processReply(RaftClientReply reply) throws IOException {
     // NotLeader exception is thrown only when the raft server to which the
     // request is submitted is not the leader. The request will be rejected
@@ -526,13 +565,56 @@ public final class XceiverServerRatis implements XceiverServerSpi {
     }
   }
 
+  private void  initializeRatisVolumeMap() throws IOException {
+    ratisVolumeMap = new EnumMap<>(StorageType.class);
+    Collection<String> rawLocations = HddsServerUtil.
+            getOzoneDatanodeRatisDirectory(conf);
+
+    for (String locationString : rawLocations) {
+      try {
+        StorageLocation location = StorageLocation.parse(locationString);
+        StorageType type = location.getStorageType();
+        ratisVolumeMap.computeIfAbsent(type, k -> new ArrayList<String>(1));
+        ratisVolumeMap.get(location.getStorageType()).
+                add(location.getUri().getPath());
+
+      } catch (IOException e) {
+        LOG.error("Failed to parse the storage location: " +
+                locationString, e);
+      }
+    }
+  }
+
+  @Override
+  public List<MetadataStorageReportProto> getStorageReport()
+      throws IOException {
+    List<MetadataStorageReportProto> reportProto = new ArrayList<>();
+    for (StorageType storageType : ratisVolumeMap.keySet()) {
+      for (String path : ratisVolumeMap.get(storageType)) {
+        MetadataStorageReportProto.Builder builder = MetadataStorageReportProto.
+                newBuilder();
+        builder.setStorageLocation(path);
+        builder.setStorageType(StorageLocationReport.
+                getStorageTypeProto(storageType));
+        reportProto.add(builder.build());
+      }
+    }
+    return reportProto;
+  }
+
   private RaftClientRequest createRaftClientRequest(
       ContainerCommandRequestProto request, HddsProtos.PipelineID pipelineID,
       RaftClientRequest.Type type) {
-    return new RaftClientRequest(clientId, server.getId(),
-        RaftGroupId.valueOf(PipelineID.getFromProtobuf(pipelineID).getId()),
-        nextCallId(), ContainerCommandRequestMessage.toMessage(request, null),
-        type, null);
+    return RaftClientRequest.newBuilder()
+        .setClientId(clientId)
+        .setServerId(server.getId())
+        .setGroupId(
+            RaftGroupId.valueOf(
+                PipelineID.getFromProtobuf(pipelineID).getId()))
+        .setCallId(nextCallId())
+        .setMessage(ContainerCommandRequestMessage.toMessage(request, null))
+        .setType(type)
+        .build();
   }
 
   private GroupInfoRequest createGroupInfoRequest(
@@ -551,6 +633,14 @@ public final class XceiverServerRatis implements XceiverServerSpi {
     case CANDIDATE:
       msg = datanode + " is in candidate state for " +
           roleInfoProto.getCandidateInfo().getLastLeaderElapsedTimeMs() + "ms";
+      break;
+    case FOLLOWER:
+      msg = datanode + " closes pipeline when installSnapshot from leader " +
+          "because leader snapshot doesn't contain any data to replay, " +
+          "all the log entries prior to the snapshot might have been purged." +
+          "So follower should not try to install snapshot from leader but" +
+          "can close the pipeline here. It's in follower state for " +
+          roleInfoProto.getRoleElapsedTimeMs() + "ms";
       break;
     case LEADER:
       StringBuilder sb = new StringBuilder();
@@ -651,10 +741,23 @@ public final class XceiverServerRatis implements XceiverServerSpi {
 
   @Override
   public void addGroup(HddsProtos.PipelineID pipelineId,
-      Collection<DatanodeDetails> peers) throws IOException {
+      List<DatanodeDetails> peers) throws IOException {
+    if (peers.size() == getDefaultPriorityList().size()) {
+      addGroup(pipelineId, peers, getDefaultPriorityList());
+    } else {
+      addGroup(pipelineId, peers,
+          new ArrayList<>(Collections.nCopies(peers.size(), 0)));
+    }
+  }
+
+  @Override
+  public void addGroup(HddsProtos.PipelineID pipelineId,
+      List<DatanodeDetails> peers,
+      List<Integer> priorityList) throws IOException {
     final PipelineID pipelineID = PipelineID.getFromProtobuf(pipelineId);
     final RaftGroupId groupId = RaftGroupId.valueOf(pipelineID.getId());
-    final RaftGroup group = RatisHelper.newRaftGroup(groupId, peers);
+    final RaftGroup group =
+        RatisHelper.newRaftGroup(groupId, peers, priorityList);
     GroupManagementRequest request = GroupManagementRequest.newAdd(
         clientId, server.getId(), nextCallId(), group);
 
@@ -670,10 +773,13 @@ public final class XceiverServerRatis implements XceiverServerSpi {
   @Override
   public void removeGroup(HddsProtos.PipelineID pipelineId)
       throws IOException {
+    // if shouldDeleteRatisLogDirectory is set to false, the raft log
+    // directory will be renamed and kept aside for debugging.
+    // In case, its set to true, the raft log directory will be removed
     GroupManagementRequest request = GroupManagementRequest.newRemove(
         clientId, server.getId(), nextCallId(),
         RaftGroupId.valueOf(PipelineID.getFromProtobuf(pipelineId).getId()),
-        true);
+        shouldDeleteRatisLogDirectory, !shouldDeleteRatisLogDirectory);
 
     RaftClientReply reply;
     try {
@@ -771,17 +877,21 @@ public final class XceiverServerRatis implements XceiverServerSpi {
   }
 
   private void sendPipelineReport() {
-    // TODO: Send IncrementalPipelineReport instead of full PipelineReport
-    context.addReport(context.getParent().getContainer().getPipelineReport());
-    context.getParent().triggerHeartbeat();
+    if (context !=  null) {
+      // TODO: Send IncrementalPipelineReport instead of full PipelineReport
+      context.addReport(context.getParent().getContainer().getPipelineReport());
+      context.getParent().triggerHeartbeat();
+    }
   }
 
   private static List<ThreadPoolExecutor> createChunkExecutors(
       ConfigurationSource conf) {
     // TODO create single pool with N threads if using non-incremental chunks
     final int threadCountPerDisk = conf.getInt(
-        OzoneConfigKeys.DFS_CONTAINER_RATIS_NUM_WRITE_CHUNK_THREADS_KEY,
-        OzoneConfigKeys.DFS_CONTAINER_RATIS_NUM_WRITE_CHUNK_THREADS_DEFAULT);
+        OzoneConfigKeys
+            .DFS_CONTAINER_RATIS_NUM_WRITE_CHUNK_THREADS_PER_VOLUME_KEY,
+        OzoneConfigKeys
+            .DFS_CONTAINER_RATIS_NUM_WRITE_CHUNK_THREADS_PER_VOLUME_DEFAULT);
 
     final int numberOfDisks =
         MutableVolumeSet.getDatanodeStorageDirs(conf).size();
@@ -800,4 +910,10 @@ public final class XceiverServerRatis implements XceiverServerSpi {
     return ImmutableList.copyOf(executors);
   }
 
+  /**
+   * @return list of default priority
+   */
+  public static List<Integer> getDefaultPriorityList() {
+    return DEFAULT_PRIORITY_LIST;
+  }
 }

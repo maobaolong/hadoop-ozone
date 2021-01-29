@@ -21,6 +21,7 @@ import org.apache.hadoop.hdds.scm.pipeline.Pipeline;
 import org.apache.hadoop.hdds.scm.pipeline.UnknownPipelineStateException;
 import org.apache.hadoop.hdds.security.token.OzoneBlockTokenIdentifier;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.KeyLocation;
+import org.apache.hadoop.ozone.protocolPB.OzonePBHelper;
 import org.apache.hadoop.security.token.Token;
 
 import java.util.Objects;
@@ -147,27 +148,33 @@ public final class OmKeyLocationInfo {
     }
 
     public OmKeyLocationInfo build() {
-      if (token == null) {
-        return new OmKeyLocationInfo(blockID, pipeline, length, offset);
-      } else {
-        return new OmKeyLocationInfo(blockID, pipeline, length, offset, token);
-      }
+      return new OmKeyLocationInfo(blockID, pipeline, length, offset, token);
     }
   }
 
+  public KeyLocation getCompactProtobuf() {
+    return getProtobuf(true);
+  }
+
   public KeyLocation getProtobuf() {
+    return getProtobuf(false);
+  }
+
+  private KeyLocation getProtobuf(boolean ignorePipeline) {
     KeyLocation.Builder builder = KeyLocation.newBuilder()
         .setBlockID(blockID.getProtobuf())
         .setLength(length)
         .setOffset(offset)
         .setCreateVersion(createVersion);
     if (this.token != null) {
-      builder.setToken(this.token.toTokenProto());
+      builder.setToken(OzonePBHelper.protoFromToken(token));
     }
-    try {
-      builder.setPipeline(pipeline.getProtobufMessage());
-    } catch (UnknownPipelineStateException e) {
-      //TODO: fix me: we should not return KeyLocation without pipeline.
+    if (!ignorePipeline) {
+      try {
+        builder.setPipeline(pipeline.getProtobufMessage());
+      } catch (UnknownPipelineStateException e) {
+        //TODO: fix me: we should not return KeyLocation without pipeline.
+      }
     }
     return builder.build();
   }
@@ -188,7 +195,8 @@ public final class OmKeyLocationInfo {
         keyLocation.getLength(),
         keyLocation.getOffset());
     if(keyLocation.hasToken()) {
-      info.token =  new Token<>(keyLocation.getToken());
+      info.token = (Token<OzoneBlockTokenIdentifier>)
+              OzonePBHelper.tokenFromProto(keyLocation.getToken());
     }
     info.setCreateVersion(keyLocation.getCreateVersion());
     return info;

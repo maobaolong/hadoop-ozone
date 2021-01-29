@@ -32,6 +32,7 @@ import org.apache.hadoop.hdds.scm.server.StorageContainerManagerHttpServer;
 import org.apache.hadoop.hdfs.web.URLConnectionFactory;
 import org.apache.hadoop.http.HttpConfig;
 import org.apache.hadoop.http.HttpConfig.Policy;
+import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
 import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.ozone.OzoneConfigKeys;
 import org.apache.hadoop.security.ssl.KeyStoreTestUtil;
@@ -90,6 +91,7 @@ public class TestStorageContainerManagerHttpServer {
   }
 
   @AfterClass public static void tearDown() throws Exception {
+    connectionFactory.destroy();
     FileUtil.fullyDelete(new File(BASEDIR));
     KeyStoreTestUtil.cleanupSSLConfig(keystoresDir, sslConfDir);
   }
@@ -101,6 +103,7 @@ public class TestStorageContainerManagerHttpServer {
 
     StorageContainerManagerHttpServer server = null;
     try {
+      DefaultMetricsSystem.initialize("TestStorageContainerManagerHttpServer");
       server = new StorageContainerManagerHttpServer(conf);
       server.start();
 

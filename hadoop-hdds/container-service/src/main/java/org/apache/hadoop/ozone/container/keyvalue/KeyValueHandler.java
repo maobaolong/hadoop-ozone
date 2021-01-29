@@ -47,6 +47,7 @@ import org.apache.hadoop.hdds.protocol.proto.StorageContainerDatanodeProtocolPro
 import org.apache.hadoop.hdds.scm.ByteStringConversion;
 import org.apache.hadoop.hdds.scm.ScmConfigKeys;
 import org.apache.hadoop.hdds.scm.container.common.helpers.StorageContainerException;
+import org.apache.hadoop.ozone.OzoneConfigKeys;
 import org.apache.hadoop.ozone.common.ChunkBuffer;
 import org.apache.hadoop.ozone.container.common.helpers.BlockData;
 import org.apache.hadoop.ozone.container.common.helpers.ChunkInfo;
@@ -119,7 +120,7 @@ public class KeyValueHandler extends Handler {
     super(config, datanodeId, contSet, volSet, metrics, icrSender);
     containerType = ContainerType.KeyValueContainer;
     blockManager = new BlockManagerImpl(config);
-    chunkManager = ChunkManagerFactory.createChunkManager(config);
+    chunkManager = ChunkManagerFactory.createChunkManager(config, blockManager);
     try {
       volumeChoosingPolicy = conf.getClass(
           HDDS_DATANODE_VOLUME_CHOOSING_POLICY, RoundRobinVolumeChoosingPolicy
@@ -127,14 +128,21 @@ public class KeyValueHandler extends Handler {
     } catch (Exception e) {
       throw new RuntimeException(e);
     }
-    maxContainerSize = (long)config.getStorageSize(
+    maxContainerSize = (long) config.getStorageSize(
         ScmConfigKeys.OZONE_SCM_CONTAINER_SIZE,
-            ScmConfigKeys.OZONE_SCM_CONTAINER_SIZE_DEFAULT, StorageUnit.BYTES);
+        ScmConfigKeys.OZONE_SCM_CONTAINER_SIZE_DEFAULT, StorageUnit.BYTES);
     // this handler lock is used for synchronizing createContainer Requests,
     // so using a fair lock here.
     containerCreationLock = new AutoCloseableLock(new ReentrantLock(true));
+
+    boolean isUnsafeByteBufferConversionEnabled =
+        conf.getBoolean(
+            OzoneConfigKeys.OZONE_UNSAFEBYTEOPERATIONS_ENABLED,
+            OzoneConfigKeys.OZONE_UNSAFEBYTEOPERATIONS_ENABLED_DEFAULT);
+
     byteBufferToByteString =
-        ByteStringConversion.createByteBufferConversion(conf);
+        ByteStringConversion
+            .createByteBufferConversion(isUnsafeByteBufferConversionEnabled);
   }
 
   @VisibleForTesting
@@ -420,17 +428,16 @@ public class KeyValueHandler extends Handler {
       BlockData blockData = BlockData.getFromProtoBuf(data);
       Preconditions.checkNotNull(blockData);
 
+      boolean incrKeyCount = false;
       if (!request.getPutBlock().hasEof() || request.getPutBlock().getEof()) {
-        for (ContainerProtos.ChunkInfo chunkInfo : blockData.getChunks()) {
-          chunkManager.finishWriteChunk(kvContainer, blockData.getBlockID(),
-              ChunkInfo.getFromProtoBuf(chunkInfo));
-        }
+        chunkManager.finishWriteChunks(kvContainer, blockData);
+        incrKeyCount = true;
       }
 
       long bcsId =
           dispatcherContext == null ? 0 : dispatcherContext.getLogIndex();
       blockData.setBlockCommitSequenceId(bcsId);
-      blockManager.putBlock(kvContainer, blockData);
+      blockManager.putBlock(kvContainer, blockData, incrKeyCount);
 
       blockDataProto = blockData.getProtoBufMessage();
 
@@ -773,7 +780,7 @@ public class KeyValueHandler extends Handler {
       // here. There is no need to maintain this info in openContainerBlockMap.
       chunkManager
           .writeChunk(kvContainer, blockID, chunkInfo, data, dispatcherContext);
-      chunkManager.finishWriteChunk(kvContainer, blockID, chunkInfo);
+      chunkManager.finishWriteChunks(kvContainer, blockData);
 
       List<ContainerProtos.ChunkInfo> chunks = new LinkedList<>();
       chunks.add(chunkInfoProto);
@@ -926,13 +933,8 @@ public class KeyValueHandler extends Handler {
       final OutputStream outputStream,
       final TarContainerPacker packer)
       throws IOException{
-    container.readLock();
-    try {
-      final KeyValueContainer kvc = (KeyValueContainer) container;
-      kvc.exportContainerData(outputStream, packer);
-    } finally {
-      container.readUnlock();
-    }
+    final KeyValueContainer kvc = (KeyValueContainer) container;
+    kvc.exportContainerData(outputStream, packer);
   }
 
   @Override
@@ -1069,5 +1071,7 @@ public class KeyValueHandler extends Handler {
     }
     // Avoid holding write locks for disk operations
     container.delete();
+    container.getContainerData().setState(State.DELETED);
+    sendICR(container);
   }
 }

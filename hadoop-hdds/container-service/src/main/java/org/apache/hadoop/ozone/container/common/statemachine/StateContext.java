@@ -28,17 +28,27 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.collect.Sets;
+import com.google.protobuf.Descriptors.Descriptor;
 import org.apache.hadoop.hdds.conf.ConfigurationSource;
 import org.apache.hadoop.hdds.protocol.proto.StorageContainerDatanodeProtocolProtos.CommandStatus.Status;
+import org.apache.hadoop.hdds.protocol.proto.StorageContainerDatanodeProtocolProtos.CommandStatusReportsProto;
 import org.apache.hadoop.hdds.protocol.proto.StorageContainerDatanodeProtocolProtos.ContainerAction;
+import org.apache.hadoop.hdds.protocol.proto.StorageContainerDatanodeProtocolProtos.ContainerReportsProto;
+import org.apache.hadoop.hdds.protocol.proto.StorageContainerDatanodeProtocolProtos.IncrementalContainerReportProto;
+import org.apache.hadoop.hdds.protocol.proto.StorageContainerDatanodeProtocolProtos.NodeReportProto;
 import org.apache.hadoop.hdds.protocol.proto.StorageContainerDatanodeProtocolProtos.PipelineAction;
+import org.apache.hadoop.hdds.protocol.proto.StorageContainerDatanodeProtocolProtos.PipelineReportsProto;
 import org.apache.hadoop.hdds.protocol.proto.StorageContainerDatanodeProtocolProtos.SCMCommandProto;
 import org.apache.hadoop.ozone.container.common.states.DatanodeState;
 import org.apache.hadoop.ozone.container.common.states.datanode.InitDatanodeState;
@@ -51,6 +61,8 @@ import com.google.common.base.Preconditions;
 import com.google.protobuf.GeneratedMessage;
 import static java.lang.Math.min;
 import org.apache.commons.collections.CollectionUtils;
+
+import static org.apache.hadoop.hdds.utils.HddsServerUtil.getLogWarnInterval;
 import static org.apache.hadoop.hdds.utils.HddsServerUtil.getScmHeartbeatInterval;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -59,6 +71,27 @@ import org.slf4j.LoggerFactory;
  * Current Context of State Machine.
  */
 public class StateContext {
+
+  @VisibleForTesting
+  final static String CONTAINER_REPORTS_PROTO_NAME =
+      ContainerReportsProto.getDescriptor().getFullName();
+  @VisibleForTesting
+  final static String NODE_REPORT_PROTO_NAME =
+      NodeReportProto.getDescriptor().getFullName();
+  @VisibleForTesting
+  final static String PIPELINE_REPORTS_PROTO_NAME =
+      PipelineReportsProto.getDescriptor().getFullName();
+  @VisibleForTesting
+  final static String COMMAND_STATUS_REPORTS_PROTO_NAME =
+      CommandStatusReportsProto.getDescriptor().getFullName();
+  @VisibleForTesting
+  final static String INCREMENTAL_CONTAINER_REPORT_PROTO_NAME =
+      IncrementalContainerReportProto.getDescriptor().getFullName();
+  // Accepted types of reports that can be queued to incrementalReportsQueue
+  private final static Set<String> ACCEPTED_INCREMENTAL_REPORT_TYPE_SET =
+      Sets.newHashSet(COMMAND_STATUS_REPORTS_PROTO_NAME,
+          INCREMENTAL_CONTAINER_REPORT_PROTO_NAME);
+
   static final Logger LOG =
       LoggerFactory.getLogger(StateContext.class);
   private final Queue<SCMCommand> commandQueue;
@@ -68,12 +101,19 @@ public class StateContext {
   private final AtomicLong stateExecutionCount;
   private final ConfigurationSource conf;
   private final Set<InetSocketAddress> endpoints;
-  private final Map<InetSocketAddress, List<GeneratedMessage>> reports;
+  // Only the latest full report of each type is kept
+  private final AtomicReference<GeneratedMessage> containerReports;
+  private final AtomicReference<GeneratedMessage> nodeReport;
+  private final AtomicReference<GeneratedMessage> pipelineReports;
+  // Incremental reports are queued in the map below
+  private final Map<InetSocketAddress, List<GeneratedMessage>>
+      incrementalReportsQueue;
   private final Map<InetSocketAddress, Queue<ContainerAction>> containerActions;
   private final Map<InetSocketAddress, Queue<PipelineAction>> pipelineActions;
   private DatanodeStateMachine.DatanodeStates state;
   private boolean shutdownOnError = false;
   private boolean shutdownGracefully = false;
+  private final AtomicLong threadPoolNotAvailableCount;
 
   /**
    * Starting with a 2 sec heartbeat frequency which will be updated to the
@@ -97,12 +137,16 @@ public class StateContext {
     this.parent = parent;
     commandQueue = new LinkedList<>();
     cmdStatusMap = new ConcurrentHashMap<>();
-    reports = new HashMap<>();
+    incrementalReportsQueue = new HashMap<>();
+    containerReports = new AtomicReference<>();
+    nodeReport = new AtomicReference<>();
+    pipelineReports = new AtomicReference<>();
     endpoints = new HashSet<>();
     containerActions = new HashMap<>();
     pipelineActions = new HashMap<>();
     lock = new ReentrantLock();
     stateExecutionCount = new AtomicLong(0);
+    threadPoolNotAvailableCount = new AtomicLong(0);
   }
 
   /**
@@ -152,7 +196,14 @@ public class StateContext {
    * @param state state.
    */
   public void setState(DatanodeStateMachine.DatanodeStates state) {
-    this.state = state;
+    if (this.state != state) {
+      if (this.state.isTransitionAllowedTo(state)) {
+        this.state = state;
+      } else {
+        LOG.warn("Ignore disallowed transition from {} to {}",
+            this.state, state);
+      }
+    }
   }
 
   /**
@@ -177,17 +228,34 @@ public class StateContext {
   public boolean getShutdownOnError() {
     return shutdownOnError;
   }
+
   /**
    * Adds the report to report queue.
    *
    * @param report report to be added
    */
   public void addReport(GeneratedMessage report) {
-    if (report != null) {
-      synchronized (reports) {
-        for (InetSocketAddress endpoint : endpoints) {
-          reports.get(endpoint).add(report);
+    if (report == null) {
+      return;
+    }
+    final Descriptor descriptor = report.getDescriptorForType();
+    Preconditions.checkState(descriptor != null);
+    final String reportType = descriptor.getFullName();
+    Preconditions.checkState(reportType != null);
+    for (InetSocketAddress endpoint : endpoints) {
+      if (reportType.equals(CONTAINER_REPORTS_PROTO_NAME)) {
+        containerReports.set(report);
+      } else if (reportType.equals(NODE_REPORT_PROTO_NAME)) {
+        nodeReport.set(report);
+      } else if (reportType.equals(PIPELINE_REPORTS_PROTO_NAME)) {
+        pipelineReports.set(report);
+      } else if (ACCEPTED_INCREMENTAL_REPORT_TYPE_SET.contains(reportType)) {
+        synchronized (incrementalReportsQueue) {
+          incrementalReportsQueue.get(endpoint).add(report);
         }
+      } else {
+        throw new IllegalArgumentException(
+            "Unidentified report message type: " + reportType);
       }
     }
   }
@@ -201,9 +269,24 @@ public class StateContext {
    */
   public void putBackReports(List<GeneratedMessage> reportsToPutBack,
                              InetSocketAddress endpoint) {
-    synchronized (reports) {
-      if (reports.containsKey(endpoint)){
-        reports.get(endpoint).addAll(0, reportsToPutBack);
+    if (LOG.isDebugEnabled()) {
+      LOG.debug("endpoint: {}, size of reportsToPutBack: {}",
+          endpoint, reportsToPutBack.size());
+    }
+    // We don't expect too much reports to be put back
+    for (GeneratedMessage report : reportsToPutBack) {
+      final Descriptor descriptor = report.getDescriptorForType();
+      Preconditions.checkState(descriptor != null);
+      final String reportType = descriptor.getFullName();
+      Preconditions.checkState(reportType != null);
+      if (!ACCEPTED_INCREMENTAL_REPORT_TYPE_SET.contains(reportType)) {
+        throw new IllegalArgumentException(
+            "Unaccepted report message type: " + reportType);
+      }
+    }
+    synchronized (incrementalReportsQueue) {
+      if (incrementalReportsQueue.containsKey(endpoint)){
+        incrementalReportsQueue.get(endpoint).addAll(0, reportsToPutBack);
       }
     }
   }
@@ -219,6 +302,22 @@ public class StateContext {
     return getReports(endpoint, Integer.MAX_VALUE);
   }
 
+  List<GeneratedMessage> getIncrementalReports(
+      InetSocketAddress endpoint, int maxLimit) {
+    List<GeneratedMessage> reportsToReturn = new LinkedList<>();
+    synchronized (incrementalReportsQueue) {
+      List<GeneratedMessage> reportsForEndpoint =
+          incrementalReportsQueue.get(endpoint);
+      if (reportsForEndpoint != null) {
+        List<GeneratedMessage> tempList = reportsForEndpoint.subList(
+            0, min(reportsForEndpoint.size(), maxLimit));
+        reportsToReturn.addAll(tempList);
+        tempList.clear();
+      }
+    }
+    return reportsToReturn;
+  }
+
   /**
    * Returns available reports from the report queue with a max limit on
    * list size, or empty list if the queue is empty.
@@ -227,15 +326,19 @@ public class StateContext {
    */
   public List<GeneratedMessage> getReports(InetSocketAddress endpoint,
                                            int maxLimit) {
-    List<GeneratedMessage> reportsToReturn = new LinkedList<>();
-    synchronized (reports) {
-      List<GeneratedMessage> reportsForEndpoint = reports.get(endpoint);
-      if (reportsForEndpoint != null) {
-        List<GeneratedMessage> tempList = reportsForEndpoint.subList(
-            0, min(reportsForEndpoint.size(), maxLimit));
-        reportsToReturn.addAll(tempList);
-        tempList.clear();
-      }
+    List<GeneratedMessage> reportsToReturn =
+        getIncrementalReports(endpoint, maxLimit);
+    GeneratedMessage report = containerReports.get();
+    if (report != null) {
+      reportsToReturn.add(report);
+    }
+    report = nodeReport.get();
+    if (report != null) {
+      reportsToReturn.add(report);
+    }
+    report = pipelineReports.get();
+    if (report != null) {
+      reportsToReturn.add(report);
     }
     return reportsToReturn;
   }
@@ -386,6 +489,20 @@ public class StateContext {
     }
   }
 
+  @VisibleForTesting
+  public boolean isThreadPoolAvailable(ExecutorService executor) {
+    if (!(executor instanceof ThreadPoolExecutor)) {
+      return true;
+    }
+
+    ThreadPoolExecutor ex = (ThreadPoolExecutor) executor;
+    if (ex.getQueue().size() == 0) {
+      return true;
+    }
+
+    return false;
+  }
+
   /**
    * Executes the required state function.
    *
@@ -408,6 +525,17 @@ public class StateContext {
       if (this.isEntering()) {
         task.onEnter();
       }
+
+      if (!isThreadPoolAvailable(service)) {
+        long count = threadPoolNotAvailableCount.getAndIncrement();
+        if (count % getLogWarnInterval(conf) == 0) {
+          LOG.warn("No available thread in pool for past {} seconds.",
+              unit.toSeconds(time) * (count + 1));
+        }
+        return;
+      }
+
+      threadPoolNotAvailableCount.set(0);
       task.execute(service);
       DatanodeStateMachine.DatanodeStates newState = task.await(time, unit);
       if (this.state != newState) {
@@ -542,7 +670,22 @@ public class StateContext {
       this.endpoints.add(endpoint);
       this.containerActions.put(endpoint, new LinkedList<>());
       this.pipelineActions.put(endpoint, new LinkedList<>());
-      this.reports.put(endpoint, new LinkedList<>());
+      this.incrementalReportsQueue.put(endpoint, new LinkedList<>());
     }
+  }
+
+  @VisibleForTesting
+  public GeneratedMessage getContainerReports() {
+    return containerReports.get();
+  }
+
+  @VisibleForTesting
+  public GeneratedMessage getNodeReport() {
+    return nodeReport.get();
+  }
+
+  @VisibleForTesting
+  public GeneratedMessage getPipelineReports() {
+    return pipelineReports.get();
   }
 }

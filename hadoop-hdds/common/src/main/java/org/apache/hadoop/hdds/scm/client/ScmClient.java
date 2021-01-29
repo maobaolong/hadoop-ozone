@@ -17,6 +17,7 @@
  */
 package org.apache.hadoop.hdds.scm.client;
 
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hadoop.hdds.annotation.InterfaceStability;
 import org.apache.hadoop.hdds.scm.container.common.helpers.ContainerWithPipeline;
 import org.apache.hadoop.hdds.scm.container.ContainerInfo;
@@ -28,6 +29,7 @@ import org.apache.hadoop.hdds.protocol.proto.HddsProtos;
 import java.io.Closeable;
 import java.io.IOException;
 import java.util.List;
+import java.util.Map;
 
 /**
  * The interface to call into underlying container layer.
@@ -142,15 +144,52 @@ public interface ScmClient extends Closeable {
       String owner) throws IOException;
 
   /**
-   * Returns a set of Nodes that meet a query criteria.
-   * @param nodeStatuses - Criteria that we want the node to have.
+   * Returns a set of Nodes that meet a query criteria. Passing null for opState
+   * or nodeState acts like a wild card, returning all nodes in that state.
+   * @param opState - Operational State of the node, eg IN_SERVICE,
+   *                DECOMMISSIONED, etc
+   * @param nodeState - Health of the nodeCriteria that we want the node to
+   *                  have, eg HEALTHY, STALE etc
    * @param queryScope - Query scope - Cluster or pool.
    * @param poolName - if it is pool, a pool name is required.
    * @return A set of nodes that meet the requested criteria.
    * @throws IOException
    */
-  List<HddsProtos.Node> queryNode(HddsProtos.NodeState nodeStatuses,
-      HddsProtos.QueryScope queryScope, String poolName) throws IOException;
+  List<HddsProtos.Node> queryNode(HddsProtos.NodeOperationalState opState,
+      HddsProtos.NodeState nodeState, HddsProtos.QueryScope queryScope,
+      String poolName) throws IOException;
+
+  /**
+   * Allows a list of hosts to be decommissioned. The hosts are identified
+   * by their hostname and optionally port in the format foo.com:port.
+   * @param hosts A list of hostnames, optionally with port
+   * @throws IOException
+   */
+  void decommissionNodes(List<String> hosts) throws IOException;
+
+  /**
+   * Allows a list of hosts in maintenance or decommission states to be placed
+   * back in service. The hosts are identified by their hostname and optionally
+   * port in the format foo.com:port.
+   * @param hosts A list of hostnames, optionally with port
+   * @throws IOException
+   */
+  void recommissionNodes(List<String> hosts) throws IOException;
+
+  /**
+   * Place the list of datanodes into maintenance mode. If a non-zero endDtm
+   * is passed, the hosts will automatically exit maintenance mode after the
+   * given time has passed. Passing an end time of zero means the hosts will
+   * remain in maintenance indefinitely.
+   * The hosts are identified by their hostname and optionally port in the
+   * format foo.com:port.
+   * @param hosts A list of hostnames, optionally with port
+   * @param endHours The number of hours from now which maintenance will end or
+   *                 zero if maintenance must be manually ended.
+   * @throws IOException
+   */
+  void startMaintenanceNodes(List<String> hosts, int endHours)
+      throws IOException;
 
   /**
    * Creates a specified replication pipeline.
@@ -209,6 +248,15 @@ public interface ScmClient extends Closeable {
    * @throws IOException
    */
   boolean inSafeMode() throws IOException;
+
+  /**
+   * Get the safe mode status of all rules.
+   *
+   * @return map of rule statuses.
+   * @throws IOException
+   */
+  Map<String, Pair<Boolean, String>> getSafeModeRuleStatuses()
+      throws IOException;
 
   /**
    * Force SCM out of safe mode.

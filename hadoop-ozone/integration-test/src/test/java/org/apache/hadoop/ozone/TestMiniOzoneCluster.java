@@ -31,6 +31,7 @@ import org.apache.hadoop.hdds.HddsConfigKeys;
 import org.apache.hadoop.hdds.conf.OzoneConfiguration;
 import org.apache.hadoop.hdds.protocol.DatanodeDetails;
 import org.apache.hadoop.hdds.protocol.proto.HddsProtos;
+import org.apache.hadoop.hdds.scm.ScmConfigKeys;
 import org.apache.hadoop.hdds.scm.XceiverClientGrpc;
 import org.apache.hadoop.hdds.scm.pipeline.Pipeline;
 import org.apache.hadoop.hdds.scm.pipeline.PipelineID;
@@ -57,13 +58,21 @@ import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import org.junit.BeforeClass;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.Timeout;
 import org.yaml.snakeyaml.Yaml;
 
 /**
  * Test cases for mini ozone cluster.
  */
 public class TestMiniOzoneCluster {
+
+  /**
+    * Set a timeout for each test.
+    */
+  @Rule
+  public Timeout timeout = new Timeout(300000);
 
   private MiniOzoneCluster cluster;
   private static OzoneConfiguration conf;
@@ -76,6 +85,7 @@ public class TestMiniOzoneCluster {
   public static void setup() {
     conf = new OzoneConfiguration();
     conf.set(HddsConfigKeys.OZONE_METADATA_DIRS, TEST_ROOT.toString());
+    conf.setInt(ScmConfigKeys.OZONE_DATANODE_PIPELINE_LIMIT, 1);
     conf.setBoolean(DFS_CONTAINER_RATIS_IPC_RANDOM_PORT, true);
     WRITE_TMP.mkdirs();
     READ_TMP.mkdirs();
@@ -94,7 +104,7 @@ public class TestMiniOzoneCluster {
     FileUtils.deleteQuietly(READ_TMP);
   }
 
-  @Test(timeout = 30000)
+  @Test(timeout = 60000)
   public void testStartMultipleDatanodes() throws Exception {
     final int numberOfNodes = 3;
     cluster = MiniOzoneCluster.newBuilder(conf)
@@ -282,7 +292,7 @@ public class TestMiniOzoneCluster {
    * Test that a DN can register with SCM even if it was started before the SCM.
    * @throws Exception
    */
-  @Test (timeout = 60000)
+  @Test (timeout = 100000)
   public void testDNstartAfterSCM() throws Exception {
     // Start a cluster with 3 DN
     cluster = MiniOzoneCluster.newBuilder(conf)

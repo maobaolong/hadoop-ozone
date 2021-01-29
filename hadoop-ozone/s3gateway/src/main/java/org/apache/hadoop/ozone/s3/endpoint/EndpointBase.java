@@ -23,6 +23,7 @@ import java.util.Collections;
 import java.util.Iterator;
 import java.util.function.Function;
 
+import org.apache.hadoop.hdds.scm.client.HddsClientUtils;
 import org.apache.hadoop.ozone.client.OzoneBucket;
 import org.apache.hadoop.ozone.client.OzoneClient;
 import org.apache.hadoop.ozone.client.OzoneVolume;
@@ -33,8 +34,6 @@ import org.apache.hadoop.ozone.s3.exception.OS3Exception;
 import org.apache.hadoop.ozone.s3.exception.S3ErrorTable;
 
 import com.google.common.annotations.VisibleForTesting;
-
-import static org.apache.hadoop.ozone.OzoneConsts.S3_VOLUME_NAME;
 
 /**
  * Basic helpers for all the REST endpoints.
@@ -71,6 +70,8 @@ public class EndpointBase {
       if (ex.getResult() == ResultCodes.BUCKET_NOT_FOUND
           || ex.getResult() == ResultCodes.VOLUME_NOT_FOUND) {
         throw S3ErrorTable.newError(S3ErrorTable.NO_SUCH_BUCKET, bucketName);
+      } else if (ex.getResult() == ResultCodes.PERMISSION_DENIED) {
+        throw S3ErrorTable.newError(S3ErrorTable.ACCESS_DENIED, bucketName);
       } else {
         throw ex;
       }
@@ -79,7 +80,9 @@ public class EndpointBase {
   }
 
   protected OzoneVolume getVolume() throws IOException {
-    return client.getObjectStore().getVolume(S3_VOLUME_NAME);
+    String s3VolumeName = HddsClientUtils.getS3VolumeName(
+        client.getConfiguration());
+    return client.getObjectStore().getVolume(s3VolumeName);
   }
 
   /**
@@ -90,11 +93,13 @@ public class EndpointBase {
    * @throws IOException
    */
   protected String createS3Bucket(String bucketName) throws
-      IOException {
+      IOException, OS3Exception {
     try {
       client.getObjectStore().createS3Bucket(bucketName);
     } catch (OMException ex) {
-      if (ex.getResult() != ResultCodes.BUCKET_ALREADY_EXISTS) {
+      if (ex.getResult() == ResultCodes.PERMISSION_DENIED) {
+        throw S3ErrorTable.newError(S3ErrorTable.ACCESS_DENIED, bucketName);
+      } else if (ex.getResult() != ResultCodes.BUCKET_ALREADY_EXISTS) {
         // S3 does not return error for bucket already exists, it just
         // returns the location.
         throw ex;
@@ -109,8 +114,16 @@ public class EndpointBase {
    * @throws  IOException in case the bucket cannot be deleted.
    */
   public void deleteS3Bucket(String s3BucketName)
-      throws IOException {
-    client.getObjectStore().deleteS3Bucket(s3BucketName);
+      throws IOException, OS3Exception {
+    try {
+      client.getObjectStore().deleteS3Bucket(s3BucketName);
+    } catch (OMException ex) {
+      if (ex.getResult() == ResultCodes.PERMISSION_DENIED) {
+        throw S3ErrorTable.newError(S3ErrorTable.ACCESS_DENIED,
+            s3BucketName);
+      }
+      throw ex;
+    }
   }
 
   /**
@@ -122,7 +135,7 @@ public class EndpointBase {
    * @return {@code Iterator<OzoneBucket>}
    */
   public Iterator<? extends OzoneBucket> listS3Buckets(String prefix)
-      throws IOException {
+      throws IOException, OS3Exception {
     return iterateBuckets(volume -> volume.listBuckets(prefix));
   }
 
@@ -137,18 +150,21 @@ public class EndpointBase {
    * @return {@code Iterator<OzoneBucket>}
    */
   public Iterator<? extends OzoneBucket> listS3Buckets(String prefix,
-      String previousBucket) throws IOException {
+      String previousBucket) throws IOException, OS3Exception {
     return iterateBuckets(volume -> volume.listBuckets(prefix, previousBucket));
   }
 
   private Iterator<? extends OzoneBucket> iterateBuckets(
       Function<OzoneVolume, Iterator<? extends OzoneBucket>> query)
-      throws IOException {
+      throws IOException, OS3Exception{
     try {
       return query.apply(getVolume());
     } catch (OMException e) {
       if (e.getResult() == ResultCodes.VOLUME_NOT_FOUND) {
         return Collections.emptyIterator();
+      } else  if (e.getResult() == ResultCodes.PERMISSION_DENIED) {
+        throw S3ErrorTable.newError(S3ErrorTable.ACCESS_DENIED,
+            "listBuckets");
       } else {
         throw e;
       }

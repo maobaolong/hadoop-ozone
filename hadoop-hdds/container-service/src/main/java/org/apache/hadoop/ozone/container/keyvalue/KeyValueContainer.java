@@ -39,7 +39,6 @@ import org.apache.hadoop.hdds.scm.container.common.helpers.StorageContainerExcep
 import org.apache.hadoop.hdfs.util.Canceler;
 import org.apache.hadoop.hdfs.util.DataTransferThrottler;
 import org.apache.hadoop.io.nativeio.NativeIO;
-import org.apache.hadoop.ozone.OzoneConfigKeys;
 import org.apache.hadoop.ozone.OzoneConsts;
 import org.apache.hadoop.ozone.container.common.helpers.ContainerUtils;
 import org.apache.hadoop.ozone.container.common.impl.ContainerDataYaml;
@@ -75,7 +74,8 @@ import org.slf4j.LoggerFactory;
  */
 public class KeyValueContainer implements Container<KeyValueContainerData> {
 
-  private static final Logger LOG = LoggerFactory.getLogger(Container.class);
+  private static final Logger LOG =
+          LoggerFactory.getLogger(KeyValueContainer.class);
 
   // Use a non-fair RW lock for better throughput, we may revisit this decision
   // if this causes fairness issues.
@@ -87,10 +87,10 @@ public class KeyValueContainer implements Container<KeyValueContainerData> {
   public KeyValueContainer(KeyValueContainerData containerData,
       ConfigurationSource
       ozoneConfig) {
-    Preconditions.checkNotNull(containerData, "KeyValueContainerData cannot " +
-        "be null");
-    Preconditions.checkNotNull(ozoneConfig, "Ozone configuration cannot " +
-        "be null");
+    Preconditions.checkNotNull(containerData,
+            "KeyValueContainerData cannot be null");
+    Preconditions.checkNotNull(ozoneConfig,
+            "Ozone configuration cannot be null");
     this.config = ozoneConfig;
     this.containerData = containerData;
   }
@@ -126,15 +126,16 @@ public class KeyValueContainer implements Container<KeyValueContainerData> {
 
       //Create Metadata path chunks path and metadata db
       File dbFile = getContainerDBFile();
-      KeyValueContainerUtil.createContainerMetaData(containerMetaDataPath,
-          chunksPath, dbFile, config);
 
-      String impl = config.getTrimmed(OzoneConfigKeys.OZONE_METADATA_STORE_IMPL,
-          OzoneConfigKeys.OZONE_METADATA_STORE_IMPL_DEFAULT);
+      // This method is only called when creating new containers.
+      // Therefore, always use the newest schema version.
+      containerData.setSchemaVersion(OzoneConsts.SCHEMA_LATEST);
+      KeyValueContainerUtil.createContainerMetaData(containerID,
+              containerMetaDataPath, chunksPath, dbFile,
+              containerData.getSchemaVersion(), config);
 
       //Set containerData for the KeyValueContainer.
       containerData.setChunksPath(chunksPath.getPath());
-      containerData.setContainerDBType(impl);
       containerData.setDbFile(dbFile);
       containerData.setVolume(containerVolume);
 
@@ -383,7 +384,7 @@ public class KeyValueContainer implements Container<KeyValueContainerData> {
   private void flushAndSyncDB() throws StorageContainerException {
     try {
       try (ReferenceCountedDB db = BlockUtils.getDB(containerData, config)) {
-        db.getStore().flushDB(true);
+        db.getStore().flushLog(true);
         LOG.info("Container {} is synced with bcsId {}.",
             containerData.getContainerID(),
             containerData.getBlockCommitSequenceId());
@@ -455,12 +456,6 @@ public class KeyValueContainer implements Container<KeyValueContainerData> {
   }
 
   @Override
-  public KeyValueBlockIterator blockIterator() throws IOException{
-    return new KeyValueBlockIterator(containerData.getContainerID(), new File(
-        containerData.getContainerPath()));
-  }
-
-  @Override
   public void importContainerData(InputStream input,
       ContainerPacker<KeyValueContainerData> packer) throws IOException {
     writeLock();
@@ -492,6 +487,7 @@ public class KeyValueContainer implements Container<KeyValueContainerData> {
       containerData.setState(originalContainerData.getState());
       containerData
           .setContainerDBType(originalContainerData.getContainerDBType());
+      containerData.setSchemaVersion(originalContainerData.getSchemaVersion());
 
       //rewriting the yaml file with new checksum calculation.
       update(originalContainerData.getMetadata(), true);
@@ -520,19 +516,38 @@ public class KeyValueContainer implements Container<KeyValueContainerData> {
   @Override
   public void exportContainerData(OutputStream destination,
       ContainerPacker<KeyValueContainerData> packer) throws IOException {
-    // Closed/ Quasi closed containers are considered for replication by
-    // replication manager if they are under-replicated.
-    ContainerProtos.ContainerDataProto.State state =
-        getContainerData().getState();
-    if (!(state == ContainerProtos.ContainerDataProto.State.CLOSED ||
-        state == ContainerDataProto.State.QUASI_CLOSED)) {
-      throw new IllegalStateException(
-          "Only closed/quasi closed containers could be exported: " +
-              "Where as ContainerId="
-              + getContainerData().getContainerID() + " is in state " + state);
+    writeLock();
+    try {
+      // Closed/ Quasi closed containers are considered for replication by
+      // replication manager if they are under-replicated.
+      ContainerProtos.ContainerDataProto.State state =
+          getContainerData().getState();
+      if (!(state == ContainerProtos.ContainerDataProto.State.CLOSED ||
+          state == ContainerDataProto.State.QUASI_CLOSED)) {
+        throw new IllegalStateException(
+            "Only (quasi)closed containers can be exported, but " +
+                "ContainerId=" + getContainerData().getContainerID() +
+                " is in state " + state);
+      }
+
+      try {
+        compactDB();
+        // Close DB (and remove from cache) to avoid concurrent modification
+        // while packing it.
+        BlockUtils.removeDB(containerData, config);
+      } finally {
+        readLock();
+        writeUnlock();
+      }
+
+      packer.pack(this, destination);
+    } finally {
+      if (lock.isWriteLockedByCurrentThread()) {
+        writeUnlock();
+      } else {
+        readUnlock();
+      }
     }
-    compactDB();
-    packer.pack(this, destination);
   }
 
   /**
@@ -671,6 +686,9 @@ public class KeyValueContainer implements Container<KeyValueContainerData> {
       break;
     case UNHEALTHY:
       state = ContainerReplicaProto.State.UNHEALTHY;
+      break;
+    case DELETED:
+      state = ContainerReplicaProto.State.DELETED;
       break;
     default:
       throw new StorageContainerException("Invalid Container state found: " +

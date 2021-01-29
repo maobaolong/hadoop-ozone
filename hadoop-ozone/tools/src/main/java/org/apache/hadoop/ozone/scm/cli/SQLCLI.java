@@ -27,8 +27,7 @@ import org.apache.commons.cli.Options;
 import org.apache.commons.cli.HelpFormatter;
 import org.apache.commons.cli.ParseException;
 import org.apache.hadoop.conf.Configured;
-import org.apache.hadoop.hdfs.DFSUtil;
-import org.apache.hadoop.hdfs.DFSUtilClient;
+import org.apache.hadoop.hdds.StringUtils;
 import org.apache.hadoop.hdds.conf.OzoneConfiguration;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OzoneAclInfo;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.BucketInfo;
@@ -46,7 +45,6 @@ import org.slf4j.LoggerFactory;
 
 import java.io.File;
 import java.io.IOException;
-import java.nio.charset.Charset;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -73,7 +71,6 @@ public class SQLCLI  extends Configured implements Tool {
 
   private Options options;
   private BasicParser parser;
-  private final Charset encoding = Charset.forName("UTF-8");
   private final OzoneConfiguration conf;
 
   // for container.db
@@ -344,7 +341,7 @@ public class SQLCLI  extends Configured implements Tool {
       executeSQL(conn, CREATE_KEY_INFO);
 
       dbStore.iterate(null, (key, value) -> {
-        String keyString = DFSUtilClient.bytes2String(key);
+        String keyString = StringUtils.bytes2String(key);
         KeyType type = getKeyType(keyString);
         try {
           insertOMDB(conn, type, keyString, value);
@@ -528,9 +525,9 @@ public class SQLCLI  extends Configured implements Tool {
       executeSQL(conn, CREATE_OPEN_CONTAINER);
 
       dbStore.iterate(null, (key, value) -> {
-        String containerName = DFSUtil.bytes2String(key);
+        String containerName = StringUtils.bytes2String(key);
         Long containerUsed =
-            Long.parseLong(DFSUtil.bytes2String(value));
+            Long.parseLong(StringUtils.bytes2String(value));
         String insertOpenContainer = String
             .format(INSERT_OPEN_CONTAINER, containerName, containerUsed);
         try {

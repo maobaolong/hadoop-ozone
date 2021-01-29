@@ -42,7 +42,10 @@ public final class OmVolumeArgs extends WithObjectID implements Auditable {
   private String ownerName;
   private final String volume;
   private long creationTime;
+  private long modificationTime;
   private long quotaInBytes;
+  private long quotaInNamespace;
+  private long usedNamespace;
   private final OmOzoneAclMap aclMap;
 
   /**
@@ -51,26 +54,31 @@ public final class OmVolumeArgs extends WithObjectID implements Auditable {
    * @param ownerName  - Volume owner's name
    * @param volume - volume name
    * @param quotaInBytes - Volume Quota in bytes.
+   * @param quotaInNamespace - Volume Quota in counts.
+   * @param usedNamespace - Volume Namespace Quota Usage in counts.
    * @param metadata - metadata map for custom key/value data.
    * @param aclMap - User to access rights map.
    * @param creationTime - Volume creation time.
-   * @param  objectID - ID of this object.
+   * @param objectID - ID of this object.
    * @param updateID - A sequence number that denotes the last update on this
    * object. This is a monotonically increasing number.
    */
   @SuppressWarnings({"checkstyle:ParameterNumber", "This is invoked from a " +
       "builder."})
   private OmVolumeArgs(String adminName, String ownerName, String volume,
-                       long quotaInBytes, Map<String, String> metadata,
-                       OmOzoneAclMap aclMap, long creationTime, long objectID,
-                      long updateID) {
+      long quotaInBytes, long quotaInNamespace, long usedNamespace,
+      Map<String, String> metadata, OmOzoneAclMap aclMap, long creationTime,
+      long modificationTime, long objectID, long updateID) {
     this.adminName = adminName;
     this.ownerName = ownerName;
     this.volume = volume;
     this.quotaInBytes = quotaInBytes;
+    this.quotaInNamespace = quotaInNamespace;
+    this.usedNamespace = usedNamespace;
     this.metadata = metadata;
     this.aclMap = aclMap;
     this.creationTime = creationTime;
+    this.modificationTime = modificationTime;
     this.objectID = objectID;
     this.updateID = updateID;
   }
@@ -84,8 +92,16 @@ public final class OmVolumeArgs extends WithObjectID implements Auditable {
     this.quotaInBytes = quotaInBytes;
   }
 
+  public void setQuotaInNamespace(long quotaInNamespace) {
+    this.quotaInNamespace= quotaInNamespace;
+  }
+
   public void setCreationTime(long time) {
     this.creationTime = time;
+  }
+
+  public void setModificationTime(long time) {
+    this.modificationTime = time;
   }
 
   public void addAcl(OzoneAcl acl) throws OMException {
@@ -133,6 +149,14 @@ public final class OmVolumeArgs extends WithObjectID implements Auditable {
   }
 
   /**
+   * Returns modification time.
+   * @return long
+   */
+  public long getModificationTime() {
+    return modificationTime;
+  }
+
+  /**
    * Returns Quota in Bytes.
    * @return long, Quota in bytes.
    */
@@ -140,9 +164,33 @@ public final class OmVolumeArgs extends WithObjectID implements Auditable {
     return quotaInBytes;
   }
 
+  /**
+   * Returns Quota in counts.
+   * @return long, Quota in counts.
+   */
+  public long getQuotaInNamespace() {
+    return quotaInNamespace;
+  }
+
   public OmOzoneAclMap getAclMap() {
     return aclMap;
   }
+
+  /**
+   * increase used bucket namespace by n.
+   */
+  public void incrUsedNamespace(long n) {
+    usedNamespace += n;
+  }
+
+  /**
+   * Returns used bucket namespace.
+   * @return usedNamespace
+   */
+  public long getUsedNamespace() {
+    return usedNamespace;
+  }
+
   /**
    * Returns new builder class that builds a OmVolumeArgs.
    *
@@ -159,7 +207,13 @@ public final class OmVolumeArgs extends WithObjectID implements Auditable {
     auditMap.put(OzoneConsts.OWNER, this.ownerName);
     auditMap.put(OzoneConsts.VOLUME, this.volume);
     auditMap.put(OzoneConsts.CREATION_TIME, String.valueOf(this.creationTime));
+    auditMap.put(OzoneConsts.MODIFICATION_TIME,
+        String.valueOf(this.modificationTime));
     auditMap.put(OzoneConsts.QUOTA_IN_BYTES, String.valueOf(this.quotaInBytes));
+    auditMap.put(OzoneConsts.QUOTA_IN_NAMESPACE,
+        String.valueOf(this.quotaInNamespace));
+    auditMap.put(OzoneConsts.USED_NAMESPACE,
+        String.valueOf(this.usedNamespace));
     auditMap.put(OzoneConsts.OBJECT_ID, String.valueOf(this.getObjectID()));
     auditMap.put(OzoneConsts.UPDATE_ID, String.valueOf(this.getUpdateID()));
     return auditMap;
@@ -190,7 +244,10 @@ public final class OmVolumeArgs extends WithObjectID implements Auditable {
     private String ownerName;
     private String volume;
     private long creationTime;
+    private long modificationTime;
     private long quotaInBytes;
+    private long quotaInNamespace;
+    private long usedNamespace;
     private Map<String, String> metadata;
     private OmOzoneAclMap aclMap;
     private long objectID;
@@ -223,6 +280,8 @@ public final class OmVolumeArgs extends WithObjectID implements Auditable {
     public Builder() {
       metadata = new HashMap<>();
       aclMap = new OmOzoneAclMap();
+      quotaInBytes = OzoneConsts.QUOTA_RESET;
+      quotaInNamespace = OzoneConsts.QUOTA_RESET;
     }
 
     public Builder setAdminName(String admin) {
@@ -245,8 +304,23 @@ public final class OmVolumeArgs extends WithObjectID implements Auditable {
       return this;
     }
 
-    public Builder setQuotaInBytes(long quota) {
-      this.quotaInBytes = quota;
+    public Builder setModificationTime(long modifiedOn) {
+      this.modificationTime = modifiedOn;
+      return this;
+    }
+
+    public Builder setQuotaInBytes(long quotaBytes) {
+      this.quotaInBytes = quotaBytes;
+      return this;
+    }
+
+    public Builder setQuotaInNamespace(long quotaNamespace) {
+      this.quotaInNamespace = quotaNamespace;
+      return this;
+    }
+
+    public Builder setUsedNamespace(long namespaceUsage) {
+      this.usedNamespace = namespaceUsage;
       return this;
     }
 
@@ -276,7 +350,8 @@ public final class OmVolumeArgs extends WithObjectID implements Auditable {
       Preconditions.checkNotNull(ownerName);
       Preconditions.checkNotNull(volume);
       return new OmVolumeArgs(adminName, ownerName, volume, quotaInBytes,
-          metadata, aclMap, creationTime, objectID, updateID);
+          quotaInNamespace, usedNamespace, metadata, aclMap, creationTime,
+          modificationTime, objectID, updateID);
     }
 
   }
@@ -288,10 +363,13 @@ public final class OmVolumeArgs extends WithObjectID implements Auditable {
         .setOwnerName(ownerName)
         .setVolume(volume)
         .setQuotaInBytes(quotaInBytes)
+        .setQuotaInNamespace(quotaInNamespace)
+        .setUsedNamespace(usedNamespace)
         .addAllMetadata(KeyValueUtil.toProtobuf(metadata))
         .addAllVolumeAcls(aclList)
         .setCreationTime(
             creationTime == 0 ? System.currentTimeMillis() : creationTime)
+        .setModificationTime(modificationTime)
         .setObjectID(objectID)
         .setUpdateID(updateID)
         .build();
@@ -306,9 +384,12 @@ public final class OmVolumeArgs extends WithObjectID implements Auditable {
         volInfo.getOwnerName(),
         volInfo.getVolume(),
         volInfo.getQuotaInBytes(),
+        volInfo.getQuotaInNamespace(),
+        volInfo.getUsedNamespace(),
         KeyValueUtil.getFromProtobuf(volInfo.getMetadataList()),
         aclMap,
         volInfo.getCreationTime(),
+        volInfo.getModificationTime(),
         volInfo.getObjectID(),
         volInfo.getUpdateID());
   }
@@ -320,7 +401,8 @@ public final class OmVolumeArgs extends WithObjectID implements Auditable {
         ", admin='" + adminName + '\'' +
         ", owner='" + ownerName + '\'' +
         ", creationTime='" + creationTime + '\'' +
-        ", quota='" + quotaInBytes + '\'' +
+        ", quotaInBytes='" + quotaInBytes + '\'' +
+        ", usedNamespace='" + usedNamespace + '\'' +
         '}';
   }
 
@@ -336,6 +418,7 @@ public final class OmVolumeArgs extends WithObjectID implements Auditable {
     OmOzoneAclMap cloneAclMap = aclMap.copyObject();
 
     return new OmVolumeArgs(adminName, ownerName, volume, quotaInBytes,
-        cloneMetadata, cloneAclMap, creationTime, objectID, updateID);
+        quotaInNamespace, usedNamespace, cloneMetadata, cloneAclMap,
+        creationTime, modificationTime, objectID, updateID);
   }
 }

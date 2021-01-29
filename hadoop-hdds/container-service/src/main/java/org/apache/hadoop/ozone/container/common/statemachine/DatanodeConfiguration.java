@@ -16,22 +16,33 @@
  */
 package org.apache.hadoop.ozone.container.common.statemachine;
 
-import javax.annotation.PostConstruct;
-
 import org.apache.hadoop.hdds.conf.Config;
 import org.apache.hadoop.hdds.conf.ConfigGroup;
-import static org.apache.hadoop.hdds.conf.ConfigTag.DATANODE;
 import org.apache.hadoop.hdds.conf.ConfigType;
+import org.apache.hadoop.hdds.conf.PostConstruct;
+import org.apache.hadoop.hdds.conf.ConfigTag;
+
+import static org.apache.hadoop.hdds.conf.ConfigTag.DATANODE;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.time.Duration;
 
 /**
  * Configuration class used for high level datanode configuration parameters.
  */
 @ConfigGroup(prefix = "hdds.datanode")
 public class DatanodeConfiguration {
-  static final Logger LOG =
+
+  private static final Logger LOG =
       LoggerFactory.getLogger(DatanodeConfiguration.class);
+
+  static final String REPLICATION_STREAMS_LIMIT_KEY =
+      "hdds.datanode.replication.streams.limit";
+  static final String CONTAINER_DELETE_THREADS_MAX_KEY =
+      "hdds.datanode.container.delete.threads.max";
+
+  static final int REPLICATION_MAX_STREAMS_DEFAULT = 10;
 
   /**
    * The maximum number of replication commands a single datanode can execute
@@ -44,9 +55,10 @@ public class DatanodeConfiguration {
       description = "The maximum number of replication commands a single " +
           "datanode can execute simultaneously"
   )
-  private final int replicationMaxStreamsDefault = 10;
+  private int replicationMaxStreams = REPLICATION_MAX_STREAMS_DEFAULT;
 
-  private int replicationMaxStreams = replicationMaxStreamsDefault;
+  static final int CONTAINER_DELETE_THREADS_DEFAULT = 2;
+
   /**
    * The maximum number of threads used to delete containers on a datanode
    * simultaneously.
@@ -58,24 +70,43 @@ public class DatanodeConfiguration {
       description = "The maximum number of threads used to delete containers " +
           "on a datanode"
   )
-  private final int containerDeleteThreadsDefault = 2;
+  private int containerDeleteThreads = CONTAINER_DELETE_THREADS_DEFAULT;
 
-  private int containerDeleteThreads = containerDeleteThreadsDefault;
+  @Config(key = "block.deleting.service.interval",
+          defaultValue = "60s",
+          type = ConfigType.TIME,
+          tags = { ConfigTag.SCM, ConfigTag.DELETION },
+          description =
+                  "Time interval of the Datanode block deleting service. The "
+                          + "block deleting service runs on Datanode "
+                          + "periodically and deletes blocks queued for "
+                          + "deletion. Unit could be defined with "
+                          + "postfix (ns,ms,s,m,h,d). "
+  )
+  private long blockDeletionInterval = Duration.ofSeconds(60).toMillis();
+
+  public Duration getBlockDeletionInterval() {
+    return Duration.ofMillis(blockDeletionInterval);
+  }
+
+  public void setBlockDeletionInterval(Duration duration) {
+    this.blockDeletionInterval = duration.toMillis();
+  }
 
   @PostConstruct
   public void validate() {
-    if (replicationMaxStreamsDefault < 1) {
-      LOG.warn("hdds.datanode.replication.streams.limit must be greater than" +
-          "zero and was set to {}. Defaulting to {}",
-          replicationMaxStreamsDefault, replicationMaxStreamsDefault);
-      replicationMaxStreams = replicationMaxStreamsDefault;
+    if (replicationMaxStreams < 1) {
+      LOG.warn(REPLICATION_STREAMS_LIMIT_KEY + " must be greater than zero " +
+              "and was set to {}. Defaulting to {}",
+          replicationMaxStreams, REPLICATION_MAX_STREAMS_DEFAULT);
+      replicationMaxStreams = REPLICATION_MAX_STREAMS_DEFAULT;
     }
 
     if (containerDeleteThreads < 1) {
-      LOG.warn("hdds.datanode.container.delete.threads.max must be greater " +
-              "than zero and was set to {}. Defaulting to {}",
-          containerDeleteThreads, containerDeleteThreadsDefault);
-      containerDeleteThreads = containerDeleteThreadsDefault;
+      LOG.warn(CONTAINER_DELETE_THREADS_MAX_KEY + " must be greater than zero" +
+              " and was set to {}. Defaulting to {}",
+          containerDeleteThreads, CONTAINER_DELETE_THREADS_DEFAULT);
+      containerDeleteThreads = CONTAINER_DELETE_THREADS_DEFAULT;
     }
   }
 

@@ -17,45 +17,45 @@
  */
 
 package org.apache.hadoop.hdds.scm.storage;
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
+import java.io.IOException;
+import java.io.OutputStream;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+
+import org.apache.hadoop.hdds.client.BlockID;
 import org.apache.hadoop.hdds.protocol.DatanodeDetails;
 import org.apache.hadoop.hdds.protocol.datanode.proto.ContainerProtos;
+import org.apache.hadoop.hdds.protocol.datanode.proto.ContainerProtos.BlockData;
+import org.apache.hadoop.hdds.protocol.datanode.proto.ContainerProtos.ChunkInfo;
+import org.apache.hadoop.hdds.protocol.datanode.proto.ContainerProtos.KeyValue;
+import org.apache.hadoop.hdds.scm.OzoneClientConfig;
+import org.apache.hadoop.hdds.scm.XceiverClientFactory;
 import org.apache.hadoop.hdds.scm.XceiverClientReply;
+import org.apache.hadoop.hdds.scm.XceiverClientSpi;
 import org.apache.hadoop.hdds.scm.container.common.helpers.StorageContainerException;
 import org.apache.hadoop.hdds.scm.pipeline.Pipeline;
 import org.apache.hadoop.ozone.common.Checksum;
 import org.apache.hadoop.ozone.common.ChecksumData;
 import org.apache.hadoop.ozone.common.ChunkBuffer;
 import org.apache.hadoop.ozone.common.OzoneChecksumException;
+import org.apache.hadoop.security.token.Token;
+import org.apache.hadoop.security.token.TokenIdentifier;
+
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.base.Preconditions;
+import static org.apache.hadoop.hdds.scm.storage.ContainerProtocolCalls.putBlockAsync;
+import static org.apache.hadoop.hdds.scm.storage.ContainerProtocolCalls.writeChunkAsync;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
-import org.apache.hadoop.hdds.scm.XceiverClientManager;
-import org.apache.hadoop.hdds.scm.XceiverClientSpi;
-import org.apache.hadoop.hdds.protocol.datanode.proto.ContainerProtos.ChecksumType;
-import org.apache.hadoop.hdds.protocol.datanode.proto.ContainerProtos.ChunkInfo;
-import org.apache.hadoop.hdds.protocol.datanode.proto.ContainerProtos.BlockData;
-import org.apache.hadoop.hdds.protocol.datanode.proto.ContainerProtos.KeyValue;
-import org.apache.hadoop.hdds.client.BlockID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import java.io.IOException;
-import java.io.OutputStream;
-import java.util.List;
-import java.util.ArrayList;
-import java.util.Map;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionException;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Executors;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
-
-import static org.apache.hadoop.hdds.scm.storage.ContainerProtocolCalls
-    .putBlockAsync;
-import static org.apache.hadoop.hdds.scm.storage.ContainerProtocolCalls
-    .writeChunkAsync;
 
 /**
  * An {@link OutputStream} used by the REST service in combination with the
@@ -76,19 +76,18 @@ import static org.apache.hadoop.hdds.scm.storage.ContainerProtocolCalls
 public class BlockOutputStream extends OutputStream {
   public static final Logger LOG =
       LoggerFactory.getLogger(BlockOutputStream.class);
+  public static final String EXCEPTION_MSG =
+      "Unexpected Storage Container Exception: ";
 
   private AtomicReference<BlockID> blockID;
 
   private final BlockData.Builder containerBlockData;
-  private XceiverClientManager xceiverClientManager;
+  private XceiverClientFactory xceiverClientFactory;
   private XceiverClientSpi xceiverClient;
-  private final int bytesPerChecksum;
+  private OzoneClientConfig config;
+
   private int chunkIndex;
   private final AtomicLong chunkOffset = new AtomicLong();
-  private final int streamBufferSize;
-  private final long streamBufferFlushSize;
-  private final boolean streamBufferFlushDelay;
-  private final long streamBufferMaxSize;
   private final BufferPool bufferPool;
   // The IOException will be set by response handling thread in case there is an
   // exception received in the response. If the exception is set, the next
@@ -118,6 +117,14 @@ public class BlockOutputStream extends OutputStream {
   private final List<DatanodeDetails> failedServers;
   private final Checksum checksum;
 
+  //number of buffers used before doing a flush/putBlock.
+  private int flushPeriod;
+  //bytes remaining to write in the current buffer.
+  private int currentBufferRemaining;
+  //current buffer allocated to write
+  private ChunkBuffer currentBuffer;
+  private final Token<? extends TokenIdentifier> token;
+
   /**
    * Creates a new BlockOutputStream.
    *
@@ -125,32 +132,36 @@ public class BlockOutputStream extends OutputStream {
    * @param xceiverClientManager client manager that controls client
    * @param pipeline             pipeline where block will be written
    * @param bufferPool           pool of buffers
-   * @param streamBufferFlushSize flush size
-   * @param streamBufferMaxSize   max size of the currentBuffer
-   * @param checksumType          checksum type
-   * @param bytesPerChecksum      Bytes per checksum
    */
-  @SuppressWarnings("parameternumber")
-  public BlockOutputStream(BlockID blockID,
-      XceiverClientManager xceiverClientManager, Pipeline pipeline,
-      int streamBufferSize, long streamBufferFlushSize,
-      boolean streamBufferFlushDelay, long streamBufferMaxSize,
-      BufferPool bufferPool, ChecksumType checksumType,
-      int bytesPerChecksum) throws IOException {
+  public BlockOutputStream(
+      BlockID blockID,
+      XceiverClientFactory xceiverClientManager,
+      Pipeline pipeline,
+      BufferPool bufferPool,
+      OzoneClientConfig config,
+      Token<? extends TokenIdentifier> token
+  ) throws IOException {
+    this.xceiverClientFactory = xceiverClientManager;
+    this.config = config;
     this.blockID = new AtomicReference<>(blockID);
     KeyValue keyValue =
         KeyValue.newBuilder().setKey("TYPE").setValue("KEY").build();
     this.containerBlockData =
         BlockData.newBuilder().setBlockID(blockID.getDatanodeBlockIDProtobuf())
             .addMetadata(keyValue);
-    this.xceiverClientManager = xceiverClientManager;
     this.xceiverClient = xceiverClientManager.acquireClient(pipeline);
-    this.streamBufferSize = streamBufferSize;
-    this.streamBufferFlushSize = streamBufferFlushSize;
-    this.streamBufferMaxSize = streamBufferMaxSize;
-    this.streamBufferFlushDelay = streamBufferFlushDelay;
     this.bufferPool = bufferPool;
-    this.bytesPerChecksum = bytesPerChecksum;
+    this.token = token;
+
+    //number of buffers used before doing a flush
+    refreshCurrentBuffer(bufferPool);
+    flushPeriod = (int) (config.getStreamBufferFlushSize() / config
+        .getStreamBufferSize());
+
+    Preconditions
+        .checkArgument(
+            (long) flushPeriod * config.getStreamBufferSize() == config
+                .getStreamBufferFlushSize());
 
     // A single thread executor handle the responses of async requests
     responseExecutor = Executors.newSingleThreadExecutor();
@@ -160,9 +171,15 @@ public class BlockOutputStream extends OutputStream {
     writtenDataLength = 0;
     failedServers = new ArrayList<>(0);
     ioException = new AtomicReference<>(null);
-    checksum = new Checksum(checksumType, bytesPerChecksum);
+    checksum = new Checksum(config.getChecksumType(),
+        config.getBytesPerChecksum());
   }
 
+  private void refreshCurrentBuffer(BufferPool pool) {
+    currentBuffer = pool.getCurrentBuffer();
+    currentBufferRemaining =
+        currentBuffer != null ? currentBuffer.remaining() : 0;
+  }
 
   public BlockID getBlockID() {
     return blockID.get();
@@ -207,9 +224,18 @@ public class BlockOutputStream extends OutputStream {
   @Override
   public void write(int b) throws IOException {
     checkOpen();
-    byte[] buf = new byte[1];
-    buf[0] = (byte) b;
-    write(buf, 0, 1);
+    allocateNewBufferIfNeeded();
+    currentBuffer.put((byte) b);
+    currentBufferRemaining--;
+    writeChunkIfNeeded();
+    writtenDataLength++;
+    doFlushOrWatchIfNeeded();
+  }
+
+  private void writeChunkIfNeeded() throws IOException {
+    if (currentBufferRemaining == 0) {
+      writeChunk(currentBuffer);
+    }
   }
 
   @Override
@@ -227,32 +253,36 @@ public class BlockOutputStream extends OutputStream {
     }
 
     while (len > 0) {
-      // Allocate a buffer if needed. The buffer will be allocated only
-      // once as needed and will be reused again for multiple blockOutputStream
-      // entries.
-      final ChunkBuffer currentBuffer = bufferPool.allocateBufferIfNeeded(
-          bytesPerChecksum);
-      final int writeLen = Math.min(currentBuffer.remaining(), len);
+      allocateNewBufferIfNeeded();
+      final int writeLen = Math.min(currentBufferRemaining, len);
       currentBuffer.put(b, off, writeLen);
-      if (!currentBuffer.hasRemaining()) {
-        writeChunk(currentBuffer);
-      }
+      currentBufferRemaining -= writeLen;
+      writeChunkIfNeeded();
       off += writeLen;
       len -= writeLen;
       writtenDataLength += writeLen;
-      if (shouldFlush()) {
+      doFlushOrWatchIfNeeded();
+    }
+  }
+
+  private void doFlushOrWatchIfNeeded() throws IOException {
+    if (currentBufferRemaining == 0) {
+      if (bufferPool.getNumberOfUsedBuffers() % flushPeriod == 0) {
         updateFlushLength();
         executePutBlock(false, false);
       }
       // Data in the bufferPool can not exceed streamBufferMaxSize
-      if (isBufferPoolFull()) {
+      if (bufferPool.getNumberOfUsedBuffers() == bufferPool.getCapacity()) {
         handleFullBuffer();
       }
     }
   }
 
-  private boolean shouldFlush() {
-    return bufferPool.computeBufferData() % streamBufferFlushSize == 0;
+  private void allocateNewBufferIfNeeded() {
+    if (currentBufferRemaining == 0) {
+      currentBuffer = bufferPool.allocateBuffer(config.getBufferIncrement());
+      currentBufferRemaining = currentBuffer.remaining();
+    }
   }
 
   private void updateFlushLength() {
@@ -260,8 +290,9 @@ public class BlockOutputStream extends OutputStream {
   }
 
   private boolean isBufferPoolFull() {
-    return bufferPool.computeBufferData() == streamBufferMaxSize;
+    return bufferPool.computeBufferData() == config.getStreamBufferMaxSize();
   }
+
   /**
    * Will be called on the retryPath in case closedContainerException/
    * TimeoutException.
@@ -277,7 +308,7 @@ public class BlockOutputStream extends OutputStream {
     if (LOG.isDebugEnabled()) {
       LOG.debug("Retrying write length {} for blockID {}", len, blockID);
     }
-    Preconditions.checkArgument(len <= streamBufferMaxSize);
+    Preconditions.checkArgument(len <= config.getStreamBufferMaxSize());
     int count = 0;
     while (len > 0) {
       ChunkBuffer buffer = bufferPool.getBuffer(count);
@@ -293,13 +324,13 @@ public class BlockOutputStream extends OutputStream {
       // the buffer. We should just validate
       // if we wrote data of size streamBufferMaxSize/streamBufferFlushSize to
       // call for handling full buffer/flush buffer condition.
-      if (writtenDataLength % streamBufferFlushSize == 0) {
+      if (writtenDataLength % config.getStreamBufferFlushSize() == 0) {
         // reset the position to zero as now we will be reading the
         // next buffer in the list
         updateFlushLength();
         executePutBlock(false, false);
       }
-      if (writtenDataLength == streamBufferMaxSize) {
+      if (writtenDataLength == config.getStreamBufferMaxSize()) {
         handleFullBuffer();
       }
     }
@@ -317,10 +348,11 @@ public class BlockOutputStream extends OutputStream {
       if (!commitWatcher.getFutureMap().isEmpty()) {
         waitOnFlushFutures();
       }
-    } catch (InterruptedException | ExecutionException e) {
-      setIoException(e);
-      adjustBuffersOnException();
-      throw getIoException();
+    } catch (ExecutionException e) {
+      handleExecutionException(e);
+    } catch (InterruptedException ex) {
+      Thread.currentThread().interrupt();
+      handleInterruptedException(ex, true);
     }
     watchForCommit(true);
   }
@@ -331,6 +363,7 @@ public class BlockOutputStream extends OutputStream {
   // only contain data which have not been sufficiently replicated
   private void adjustBuffersOnException() {
     commitWatcher.releaseBuffersOnException();
+    refreshCurrentBuffer(bufferPool);
   }
 
   /**
@@ -360,6 +393,8 @@ public class BlockOutputStream extends OutputStream {
       setIoException(ioe);
       throw getIoException();
     }
+    refreshCurrentBuffer(bufferPool);
+
   }
 
   /**
@@ -383,11 +418,11 @@ public class BlockOutputStream extends OutputStream {
     }
 
     CompletableFuture<ContainerProtos.
-        ContainerCommandResponseProto> flushFuture;
+        ContainerCommandResponseProto> flushFuture = null;
     try {
       BlockData blockData = containerBlockData.build();
       XceiverClientReply asyncReply =
-          putBlockAsync(xceiverClient, blockData, close);
+          putBlockAsync(xceiverClient, blockData, close, token);
       CompletableFuture<ContainerProtos.ContainerCommandResponseProto> future =
           asyncReply.getResponse();
       flushFuture = future.thenApplyAsync(e -> {
@@ -427,9 +462,11 @@ public class BlockOutputStream extends OutputStream {
         setIoException(ce);
         throw ce;
       });
-    } catch (IOException | InterruptedException | ExecutionException e) {
-      throw new IOException(
-          "Unexpected Storage Container Exception: " + e.toString(), e);
+    } catch (IOException | ExecutionException e) {
+      throw new IOException(EXCEPTION_MSG + e.toString(), e);
+    } catch (InterruptedException ex) {
+      Thread.currentThread().interrupt();
+      handleInterruptedException(ex, false);
     }
     commitWatcher.getFutureMap().put(flushPos, flushFuture);
     return flushFuture;
@@ -437,18 +474,20 @@ public class BlockOutputStream extends OutputStream {
 
   @Override
   public void flush() throws IOException {
-    if (xceiverClientManager != null && xceiverClient != null
+    if (xceiverClientFactory != null && xceiverClient != null
         && bufferPool != null && bufferPool.getSize() > 0
-        && (!streamBufferFlushDelay ||
-            writtenDataLength - totalDataFlushedLength >= streamBufferSize)) {
+        && (!config.isStreamBufferFlushDelay() ||
+            writtenDataLength - totalDataFlushedLength
+                >= config.getStreamBufferSize())) {
       try {
         handleFlush(false);
-      } catch (InterruptedException | ExecutionException e) {
+      } catch (ExecutionException e) {
         // just set the exception here as well in order to maintain sanctity of
         // ioException field
-        setIoException(e);
-        adjustBuffersOnException();
-        throw getIoException();
+        handleExecutionException(e);
+      } catch (InterruptedException ex) {
+        Thread.currentThread().interrupt();
+        handleInterruptedException(ex, true);
       }
     }
   }
@@ -475,7 +514,7 @@ public class BlockOutputStream extends OutputStream {
     checkOpen();
     // flush the last chunk data residing on the currentBuffer
     if (totalDataFlushedLength < writtenDataLength) {
-      final ChunkBuffer currentBuffer = bufferPool.getCurrentBuffer();
+      refreshCurrentBuffer(bufferPool);
       Preconditions.checkArgument(currentBuffer.position() > 0);
       if (currentBuffer.hasRemaining()) {
         writeChunk(currentBuffer);
@@ -502,14 +541,15 @@ public class BlockOutputStream extends OutputStream {
 
   @Override
   public void close() throws IOException {
-    if (xceiverClientManager != null && xceiverClient != null
+    if (xceiverClientFactory != null && xceiverClient != null
         && bufferPool != null && bufferPool.getSize() > 0) {
       try {
         handleFlush(true);
-      } catch (InterruptedException | ExecutionException e) {
-        setIoException(e);
-        adjustBuffersOnException();
-        throw getIoException();
+      } catch (ExecutionException e) {
+        handleExecutionException(e);
+      } catch (InterruptedException ex) {
+        Thread.currentThread().interrupt();
+        handleInterruptedException(ex, true);
       } finally {
         cleanup(false);
       }
@@ -552,8 +592,7 @@ public class BlockOutputStream extends OutputStream {
   private void setIoException(Exception e) {
     IOException ioe = getIoException();
     if (ioe == null) {
-      IOException exception =  new IOException(
-          "Unexpected Storage Container Exception: " + e.toString(), e);
+      IOException exception =  new IOException(EXCEPTION_MSG + e.toString(), e);
       ioException.compareAndSet(null, exception);
     } else {
       LOG.debug("Previous request had already failed with " + ioe.toString()
@@ -563,10 +602,10 @@ public class BlockOutputStream extends OutputStream {
   }
 
   public void cleanup(boolean invalidateClient) {
-    if (xceiverClientManager != null) {
-      xceiverClientManager.releaseClient(xceiverClient, invalidateClient);
+    if (xceiverClientFactory != null) {
+      xceiverClientFactory.releaseClient(xceiverClient, invalidateClient);
     }
-    xceiverClientManager = null;
+    xceiverClientFactory = null;
     xceiverClient = null;
     commitWatcher.cleanup();
     if (bufferList !=  null) {
@@ -577,7 +616,7 @@ public class BlockOutputStream extends OutputStream {
   }
 
   /**
-   * Checks if the stream is open or exception has occured.
+   * Checks if the stream is open or exception has occurred.
    * If not, throws an exception.
    *
    * @throws IOException if stream is closed
@@ -622,8 +661,8 @@ public class BlockOutputStream extends OutputStream {
     }
 
     try {
-      XceiverClientReply asyncReply =
-          writeChunkAsync(xceiverClient, chunkInfo, blockID.get(), data);
+      XceiverClientReply asyncReply = writeChunkAsync(xceiverClient, chunkInfo,
+          blockID.get(), data, token);
       CompletableFuture<ContainerProtos.ContainerCommandResponseProto> future =
           asyncReply.getResponse();
       future.thenApplyAsync(e -> {
@@ -634,18 +673,18 @@ public class BlockOutputStream extends OutputStream {
         }
         return e;
       }, responseExecutor).exceptionally(e -> {
-        if (LOG.isDebugEnabled()) {
-          LOG.debug(
-              "writing chunk failed " + chunkInfo.getChunkName() + " blockID "
-                  + blockID + " with exception " + e.getLocalizedMessage());
-        }
+        LOG.error("writing chunk failed " + chunkInfo.getChunkName() +
+                " blockID " + blockID + " with exception "
+                + e.getLocalizedMessage());
         CompletionException ce = new CompletionException(e);
         setIoException(ce);
         throw ce;
       });
-    } catch (IOException | InterruptedException | ExecutionException e) {
-      throw new IOException(
-          "Unexpected Storage Container Exception: " + e.toString(), e);
+    } catch (IOException | ExecutionException e) {
+      throw new IOException(EXCEPTION_MSG + e.toString(), e);
+    } catch (InterruptedException ex) {
+      Thread.currentThread().interrupt();
+      handleInterruptedException(ex, false);
     }
     containerBlockData.addChunks(chunkInfo);
   }
@@ -653,5 +692,35 @@ public class BlockOutputStream extends OutputStream {
   @VisibleForTesting
   public void setXceiverClient(XceiverClientSpi xceiverClient) {
     this.xceiverClient = xceiverClient;
+  }
+
+  /**
+   * Handles InterruptedExecution.
+   *
+   * @param ex
+   * @param processExecutionException is optional, if passed as TRUE, then
+   * handle ExecutionException else skip it.
+   * @throws IOException
+   */
+  private void handleInterruptedException(Exception ex,
+      boolean processExecutionException)
+      throws IOException {
+    LOG.error("Command execution was interrupted.");
+    if(processExecutionException) {
+      handleExecutionException(ex);
+    } else {
+      throw new IOException(EXCEPTION_MSG + ex.toString(), ex);
+    }
+  }
+
+  /**
+   * Handles ExecutionException by adjusting buffers.
+   * @param ex
+   * @throws IOException
+   */
+  private void handleExecutionException(Exception ex) throws IOException {
+    setIoException(ex);
+    adjustBuffersOnException();
+    throw getIoException();
   }
 }

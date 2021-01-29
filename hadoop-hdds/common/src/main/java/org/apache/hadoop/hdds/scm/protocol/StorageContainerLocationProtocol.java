@@ -17,6 +17,7 @@
 
 package org.apache.hadoop.hdds.scm.protocol;
 
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hadoop.hdds.scm.ScmConfig;
 import org.apache.hadoop.hdds.scm.ScmInfo;
 import org.apache.hadoop.hdds.scm.container.common.helpers.ContainerWithPipeline;
@@ -27,6 +28,7 @@ import org.apache.hadoop.hdds.protocol.proto.HddsProtos;
 import java.io.Closeable;
 import java.io.IOException;
 import java.util.List;
+import java.util.Map;
 
 import org.apache.hadoop.security.KerberosInfo;
 
@@ -117,12 +119,22 @@ public interface StorageContainerLocationProtocol extends Closeable {
   void deleteContainer(long containerID) throws IOException;
 
   /**
-   *  Queries a list of Node Statuses.
-   * @param state
+   *  Queries a list of Node Statuses. Passing a null for either opState or
+   *  state acts like a wildcard returning all nodes in that state.
+   * @param opState The node operational state
+   * @param state The node health
    * @return List of Datanodes.
    */
-  List<HddsProtos.Node> queryNode(HddsProtos.NodeState state,
-      HddsProtos.QueryScope queryScope, String poolName) throws IOException;
+  List<HddsProtos.Node> queryNode(HddsProtos.NodeOperationalState opState,
+      HddsProtos.NodeState state, HddsProtos.QueryScope queryScope,
+      String poolName) throws IOException;
+
+  void decommissionNodes(List<String> nodes) throws IOException;
+
+  void recommissionNodes(List<String> nodes) throws IOException;
+
+  void startMaintenanceNodes(List<String> nodes, int endInHours)
+      throws IOException;
 
   /**
    * Close a container.
@@ -201,6 +213,8 @@ public interface StorageContainerLocationProtocol extends Closeable {
    */
   boolean inSafeMode() throws IOException;
 
+  Map<String, Pair<Boolean, String>> getSafeModeRuleStatuses()
+      throws IOException;
   /**
    * Force SCM out of Safe mode.
    *

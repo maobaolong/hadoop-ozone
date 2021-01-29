@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -26,11 +26,19 @@ import org.apache.hadoop.ozone.recon.ReconServerConfigKeys;
 import org.apache.hadoop.ozone.s3.S3GatewayConfigKeys;
 
 import java.util.Arrays;
+import org.junit.Rule;
+import org.junit.rules.Timeout;
 
 /**
  * Tests if configuration constants documented in ozone-defaults.xml.
  */
 public class TestOzoneConfigurationFields extends TestConfigurationFieldsBase {
+
+  /**
+    * Set a timeout for each test.
+    */
+  @Rule
+  public Timeout timeout = new Timeout(300000);
 
   @Override
   public void initializeMemberVariables() {
@@ -46,6 +54,8 @@ public class TestOzoneConfigurationFields extends TestConfigurationFieldsBase {
     errorIfMissingXmlProps = true;
     xmlPropsToSkipCompare.add("hadoop.tags.custom");
     xmlPropsToSkipCompare.add("ozone.om.nodes.EXAMPLEOMSERVICEID");
+    xmlPropsToSkipCompare.add("ozone.om.leader.election.minimum.timeout" +
+        ".duration"); // Deprecated config
     addPropertiesNotInXml();
   }
 
@@ -59,7 +69,18 @@ public class TestOzoneConfigurationFields extends TestConfigurationFieldsBase {
         OMConfigKeys.OZONE_OM_NODES_KEY,
         OzoneConfigKeys.OZONE_ACL_AUTHORIZER_CLASS_NATIVE,
         OzoneConfigKeys.OZONE_S3_AUTHINFO_MAX_LIFETIME_KEY,
-        ReconServerConfigKeys.OZONE_RECON_SCM_DB_DIR
+        ReconServerConfigKeys.OZONE_RECON_SCM_DB_DIR,
+        ReconServerConfigKeys.OZONE_RECON_METRICS_HTTP_CONNECTION_TIMEOUT,
+        ReconServerConfigKeys
+            .OZONE_RECON_METRICS_HTTP_CONNECTION_REQUEST_TIMEOUT,
+        ReconServerConfigKeys.RECON_OM_SOCKET_TIMEOUT,
+        ReconServerConfigKeys.RECON_OM_CONNECTION_TIMEOUT,
+        ReconServerConfigKeys.RECON_OM_CONNECTION_REQUEST_TIMEOUT,
+        ReconServerConfigKeys.RECON_OM_SNAPSHOT_TASK_INITIAL_DELAY,
+        ReconServerConfigKeys.RECON_OM_SNAPSHOT_TASK_INTERVAL_DELAY,
+        ReconServerConfigKeys.RECON_OM_SNAPSHOT_TASK_FLUSH_PARAM,
+        OMConfigKeys.OZONE_OM_RATIS_SNAPSHOT_AUTO_TRIGGER_THRESHOLD_KEY,
+        OMConfigKeys.OZONE_OM_HA_PREFIX
         // TODO HDDS-2856
     ));
   }

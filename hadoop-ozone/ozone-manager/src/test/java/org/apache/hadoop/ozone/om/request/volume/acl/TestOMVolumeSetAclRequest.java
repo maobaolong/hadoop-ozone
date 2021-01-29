@@ -49,6 +49,8 @@ public class TestOMVolumeSetAclRequest extends TestOMVolumeRequest {
     OMRequest originalRequest =
         TestOMRequestUtils.createVolumeSetAclRequest(volumeName,
             Lists.newArrayList(acl));
+    long originModTime = originalRequest.getSetAclRequest()
+        .getModificationTime();
 
     OMVolumeSetAclRequest omVolumeSetAclRequest =
         new OMVolumeSetAclRequest(originalRequest);
@@ -56,6 +58,11 @@ public class TestOMVolumeSetAclRequest extends TestOMVolumeRequest {
     OMRequest modifiedRequest = omVolumeSetAclRequest.preExecute(
         ozoneManager);
     Assert.assertNotEquals(modifiedRequest, originalRequest);
+
+    long newModTime = modifiedRequest.getSetAclRequest().getModificationTime();
+    // When preExecute() of setting acl,
+    // the new modification time is greater than origin one.
+    Assert.assertTrue(newModTime > originModTime);
   }
 
   @Test
@@ -131,40 +138,5 @@ public class TestOMVolumeSetAclRequest extends TestOMVolumeRequest {
     Assert.assertNotNull(omResponse.getSetAclResponse());
     Assert.assertEquals(OzoneManagerProtocolProtos.Status.VOLUME_NOT_FOUND,
         omResponse.getStatus());
-  }
-
-  @Test
-  public void testReplayRequest() throws Exception {
-    String volumeName = UUID.randomUUID().toString();
-    String ownerName = "user1";
-
-    TestOMRequestUtils.addUserToDB(volumeName, ownerName, omMetadataManager);
-    TestOMRequestUtils.addVolumeToDB(volumeName, ownerName, omMetadataManager);
-
-    OzoneAcl userAccessAcl = OzoneAcl.parseAcl("user:bilbo:rw[ACCESS]");
-    OzoneAcl groupDefaultAcl = OzoneAcl.parseAcl(
-        "group:admin:rwdlncxy[DEFAULT]");
-
-    List<OzoneAcl> acls = Lists.newArrayList(userAccessAcl, groupDefaultAcl);
-
-    OMRequest originalRequest = TestOMRequestUtils.createVolumeSetAclRequest(
-        volumeName, acls);
-
-    OMVolumeSetAclRequest omVolumeSetAclRequest = new OMVolumeSetAclRequest(
-        originalRequest);
-    omVolumeSetAclRequest.preExecute(ozoneManager);
-
-    OMClientResponse omClientResponse = omVolumeSetAclRequest
-        .validateAndUpdateCache(ozoneManager, 1,
-            ozoneManagerDoubleBufferHelper);
-    Assert.assertEquals(OzoneManagerProtocolProtos.Status.OK,
-        omClientResponse.getOMResponse().getStatus());
-
-    OMClientResponse replayResponse = omVolumeSetAclRequest
-        .validateAndUpdateCache(ozoneManager, 1,
-            ozoneManagerDoubleBufferHelper);
-
-    Assert.assertEquals(OzoneManagerProtocolProtos.Status.REPLAY,
-        replayResponse.getOMResponse().getStatus());
   }
 }

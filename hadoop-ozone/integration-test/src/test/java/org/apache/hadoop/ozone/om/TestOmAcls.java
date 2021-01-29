@@ -43,11 +43,18 @@ import org.junit.BeforeClass;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.ExpectedException;
+import org.junit.rules.Timeout;
 
 /**
  * Test for Ozone Manager ACLs.
  */
 public class TestOmAcls {
+
+  /**
+    * Set a timeout for each test.
+    */
+  @Rule
+  public Timeout timeout = new Timeout(300000);
 
   private static boolean aclAllow = true;
   private static MiniOzoneCluster cluster = null;
@@ -109,7 +116,14 @@ public class TestOmAcls {
 
     String volumeName = RandomStringUtils.randomAlphabetic(5).toLowerCase();
     String bucketName = RandomStringUtils.randomAlphabetic(5).toLowerCase();
-    cluster.getClient().getObjectStore().createVolume(volumeName);
+
+    VolumeArgs createVolumeArgs = VolumeArgs.newBuilder()
+        .setOwner("user" + RandomStringUtils.randomNumeric(5))
+        .setAdmin("admin" + RandomStringUtils.randomNumeric(5))
+        .build();
+
+    cluster.getClient().getObjectStore().createVolume(volumeName,
+        createVolumeArgs);
     OzoneVolume volume =
         cluster.getClient().getObjectStore().getVolume(volumeName);
 

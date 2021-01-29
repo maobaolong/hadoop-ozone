@@ -17,6 +17,16 @@
 
 package org.apache.hadoop.ozone.security;
 
+import java.io.ByteArrayInputStream;
+import java.io.DataInputStream;
+import java.io.IOException;
+import java.security.cert.CertificateExpiredException;
+import java.security.cert.CertificateNotYetValidException;
+import java.security.cert.X509Certificate;
+import java.util.Iterator;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
 import org.apache.hadoop.hdds.annotation.InterfaceAudience;
 import org.apache.hadoop.hdds.annotation.InterfaceStability;
 import org.apache.hadoop.hdds.conf.OzoneConfiguration;
@@ -35,19 +45,12 @@ import org.apache.hadoop.security.HadoopKerberosName;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.util.Daemon;
 import org.apache.hadoop.util.Time;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import java.io.ByteArrayInputStream;
-import java.io.DataInputStream;
-import java.io.IOException;
-import java.util.Iterator;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.apache.hadoop.ozone.om.exceptions.OMException.ResultCodes.TOKEN_EXPIRED;
 import static org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OMTokenProto.Type.S3AUTHINFO;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * SecretManager for Ozone Master. Responsible for signing identifiers with
@@ -436,9 +439,28 @@ public class OzoneDelegationTokenSecretManager
    */
   public boolean verifySignature(OzoneTokenIdentifier identifier,
       byte[] password) {
+    X509Certificate signerCert = null;
+    try {
+      signerCert = getCertClient().getCertificate(
+          identifier.getOmCertSerialId());
+    } catch (CertificateException e) {
+      return false;
+    }
+
+    if (signerCert == null) {
+      return false;
+    }
+
+    // Check for expired certificate or not yet valid certificate
+    try {
+      signerCert.checkValidity();
+    } catch (CertificateExpiredException | CertificateNotYetValidException e) {
+      return false;
+    }
+
     try {
       return getCertClient().verifySignature(identifier.getBytes(), password,
-          getCertClient().getCertificate(identifier.getOmCertSerialId()));
+          signerCert);
     } catch (CertificateException e) {
       return false;
     }
@@ -530,6 +552,7 @@ public class OzoneDelegationTokenSecretManager
       try {
         tokenRemoverThread.join();
       } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
         throw new RuntimeException(
             "Unable to join on token removal thread", e);
       }
@@ -593,14 +616,15 @@ public class OzoneDelegationTokenSecretManager
             removeExpiredToken();
             lastTokenCacheCleanup = now;
           }
-          try {
-            Thread.sleep(Math.min(5000,
-                getTokenRemoverScanInterval())); // 5 seconds
-          } catch (InterruptedException ie) {
-            LOG.error("ExpiredTokenRemover received {}", ie);
-          }
+
+          // Sleep for 5 seconds
+          Thread.sleep(Math.min(5000, getTokenRemoverScanInterval()));
+
         }
-      } catch (Throwable t) {
+      } catch (InterruptedException ie) {
+        LOG.info("ExpiredTokenRemover was interrupted.", ie);
+        Thread.currentThread().interrupt();
+      } catch (Exception t) {
         LOG.error("ExpiredTokenRemover thread received unexpected exception",
             t);
         Runtime.getRuntime().exit(-1);

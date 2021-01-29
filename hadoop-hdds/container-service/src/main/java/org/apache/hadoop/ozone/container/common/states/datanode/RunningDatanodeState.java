@@ -16,6 +16,7 @@
  */
 package org.apache.hadoop.ozone.container.common.states.datanode;
 
+import com.google.common.annotations.VisibleForTesting;
 import org.apache.hadoop.hdds.conf.ConfigurationSource;
 import org.apache.hadoop.ozone.container.common.statemachine.DatanodeStateMachine;
 import org.apache.hadoop.ozone.container.common.statemachine.EndpointStateMachine;
@@ -42,7 +43,6 @@ import java.util.concurrent.ExecutorCompletionService;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 
 /**
  * Class that implements handshake with SCM.
@@ -72,8 +72,7 @@ public class RunningDatanodeState implements DatanodeState {
    * each end point state.
    */
   private void initEndPointTask() {
-    endpointTasks = new HashMap<EndpointStateMachine, Map<EndPointStates,
-        Callable<EndPointStates>>>();
+    endpointTasks = new HashMap<>();
     for (EndpointStateMachine endpoint : connectionManager.getValues()) {
       EnumMap<EndPointStates, Callable<EndPointStates>> endpointTaskForState =
           new EnumMap<>(EndPointStates.class);
@@ -141,7 +140,13 @@ public class RunningDatanodeState implements DatanodeState {
     for (EndpointStateMachine endpoint : connectionManager.getValues()) {
       Callable<EndPointStates> endpointTask = getEndPointTask(endpoint);
       if (endpointTask != null) {
-        ecs.submit(endpointTask);
+        // Just do a timely wait. A slow EndpointStateMachine won't occupy
+        // the thread in executor from DatanodeStateMachine for a long time,
+        // so that it won't affect the communication between datanode and
+        // other EndpointStateMachine.
+        ecs.submit(() -> endpoint.getExecutorService()
+            .submit(endpointTask)
+            .get(context.getHeartbeatFrequency(), TimeUnit.MILLISECONDS));
       } else {
         // This can happen if a task is taking more time than the timeOut
         // specified for the task in await, and when it is completed the task
@@ -151,6 +156,11 @@ public class RunningDatanodeState implements DatanodeState {
         context.setState(DatanodeStateMachine.DatanodeStates.SHUTDOWN);
       }
     }
+  }
+
+  @VisibleForTesting
+  public void setExecutorCompletionService(ExecutorCompletionService e) {
+    this.ecs = e;
   }
 
   private Callable<EndPointStates> getEndPointTask(
@@ -182,7 +192,10 @@ public class RunningDatanodeState implements DatanodeState {
           // if any endpoint tells us to shutdown we move to shutdown state.
           return DatanodeStateMachine.DatanodeStates.SHUTDOWN;
         }
-      } catch (InterruptedException | ExecutionException e) {
+      } catch (InterruptedException e) {
+        LOG.error("Error in executing end point task.", e);
+        Thread.currentThread().interrupt();
+      } catch (ExecutionException e) {
         LOG.error("Error in executing end point task.", e);
       }
     }
@@ -198,10 +211,11 @@ public class RunningDatanodeState implements DatanodeState {
   @Override
   public DatanodeStateMachine.DatanodeStates
       await(long duration, TimeUnit timeUnit)
-      throws InterruptedException, ExecutionException, TimeoutException {
+      throws InterruptedException {
     int count = connectionManager.getValues().size();
     int returned = 0;
-    long timeLeft = timeUnit.toMillis(duration);
+    long durationMS = timeUnit.toMillis(duration);
+    long timeLeft = durationMS;
     long startTime = Time.monotonicNow();
     List<Future<EndPointStates>> results = new LinkedList<>();
 
@@ -212,7 +226,7 @@ public class RunningDatanodeState implements DatanodeState {
         results.add(result);
         returned++;
       }
-      timeLeft = timeLeft - (Time.monotonicNow() - startTime);
+      timeLeft = durationMS - (Time.monotonicNow() - startTime);
     }
     return computeNextContainerState(results);
   }

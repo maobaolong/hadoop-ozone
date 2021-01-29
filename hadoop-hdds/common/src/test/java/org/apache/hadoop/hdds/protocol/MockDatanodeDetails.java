@@ -17,6 +17,8 @@
  */
 package org.apache.hadoop.hdds.protocol;
 
+import org.apache.hadoop.hdds.protocol.proto.HddsProtos;
+
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.util.Random;
@@ -44,7 +46,7 @@ public final class MockDatanodeDetails {
    * @return DatanodeDetails
    */
   public static DatanodeDetails createDatanodeDetails(String hostname,
-       String loc) {
+      String loc) {
     Random random = ThreadLocalRandom.current();
     String ipAddress = random.nextInt(256)
         + "." + random.nextInt(256)
@@ -94,13 +96,15 @@ public final class MockDatanodeDetails {
     DatanodeDetails.Port restPort = DatanodeDetails.newPort(
         DatanodeDetails.Port.Name.REST, port);
     return DatanodeDetails.newBuilder()
-        .setUuid(uuid)
+        .setUuid(UUID.fromString(uuid))
         .setHostName(hostname)
         .setIpAddress(ipAddress)
         .addPort(containerPort)
         .addPort(ratisPort)
         .addPort(restPort)
         .setNetworkLocation(networkLocation)
+        .setPersistedOpState(HddsProtos.NodeOperationalState.IN_SERVICE)
+        .setPersistedOpStateExpiry(0)
         .build();
   }
 
