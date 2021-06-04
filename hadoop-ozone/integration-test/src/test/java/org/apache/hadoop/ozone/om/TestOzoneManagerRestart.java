@@ -32,10 +32,11 @@ import org.apache.hadoop.ozone.client.OzoneClient;
 import org.apache.hadoop.ozone.client.OzoneKey;
 import org.apache.hadoop.ozone.client.OzoneVolume;
 import org.apache.hadoop.ozone.client.io.OzoneOutputStream;
-import org.apache.hadoop.test.GenericTestUtils;
+import org.apache.ozone.test.GenericTestUtils;
 
 import org.apache.commons.lang3.RandomStringUtils;
 
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.apache.hadoop.hdds.scm.ScmConfigKeys.OZONE_SCM_RATIS_PIPELINE_LIMIT;
 import static org.apache.hadoop.ozone.OzoneConfigKeys.OZONE_ACL_ENABLED;
 import static org.apache.hadoop.ozone.OzoneConfigKeys.OZONE_ADMINISTRATORS;
@@ -61,7 +62,7 @@ public class TestOzoneManagerRestart {
   private static String omId;
 
   @Rule
-  public Timeout timeout = new Timeout(240000);
+  public Timeout timeout = Timeout.seconds(240);
 
   /**
    * Create a MiniDFSCluster for testing.
@@ -191,7 +192,7 @@ public class TestOzoneManagerRestart {
         data.length(), ReplicationType.RATIS, ReplicationFactor.ONE,
         new HashMap<>());
 
-    ozoneOutputStream.write(data.getBytes(), 0, data.length());
+    ozoneOutputStream.write(data.getBytes(UTF_8), 0, data.length());
     ozoneOutputStream.close();
 
     cluster.restartOzoneManager();

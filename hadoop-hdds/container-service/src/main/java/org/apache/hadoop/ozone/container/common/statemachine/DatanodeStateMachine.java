@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one or more
  * contributor license agreements.  See the NOTICE file distributed with this
  * work for additional information regarding copyright ownership.  The ASF
@@ -27,7 +27,9 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import org.apache.hadoop.hdds.HddsUtils;
 import org.apache.hadoop.hdds.conf.ConfigurationSource;
+import org.apache.hadoop.hdds.datanode.metadata.DatanodeCRLStore;
 import org.apache.hadoop.hdds.protocol.DatanodeDetails;
+import org.apache.hadoop.hdds.protocol.proto.StorageContainerDatanodeProtocolProtos.CRLStatusReport;
 import org.apache.hadoop.hdds.protocol.proto.StorageContainerDatanodeProtocolProtos.CommandStatusReportsProto;
 import org.apache.hadoop.hdds.protocol.proto.StorageContainerDatanodeProtocolProtos.ContainerReportsProto;
 import org.apache.hadoop.hdds.protocol.proto.StorageContainerDatanodeProtocolProtos.NodeReportProto;
@@ -48,6 +50,7 @@ import org.apache.hadoop.ozone.container.keyvalue.TarContainerPacker;
 import org.apache.hadoop.ozone.container.ozoneimpl.OzoneContainer;
 import org.apache.hadoop.ozone.container.replication.ContainerReplicator;
 import org.apache.hadoop.ozone.container.replication.DownloadAndImportReplicator;
+import org.apache.hadoop.ozone.container.replication.MeasuredReplicator;
 import org.apache.hadoop.ozone.container.replication.ReplicationSupervisor;
 import org.apache.hadoop.ozone.container.replication.SimpleContainerDownloader;
 import org.apache.hadoop.ozone.protocol.commands.SCMCommand;
@@ -72,11 +75,12 @@ public class DatanodeStateMachine implements Closeable {
   private final SCMConnectionManager connectionManager;
   private StateContext context;
   private final OzoneContainer container;
-  private DatanodeDetails datanodeDetails;
+  private final DatanodeCRLStore dnCRLStore;
+  private final DatanodeDetails datanodeDetails;
   private final CommandDispatcher commandDispatcher;
   private final ReportManager reportManager;
   private long commandsHandled;
-  private AtomicLong nextHB;
+  private final AtomicLong nextHB;
   private Thread stateMachineThread = null;
   private Thread cmdProcessThread = null;
   private final ReplicationSupervisor supervisor;
@@ -89,6 +93,7 @@ public class DatanodeStateMachine implements Closeable {
    * constructor in a non-thread-safe way - see HDDS-3116.
    */
   private final ReadWriteLock constructionLock = new ReentrantReadWriteLock();
+  private final MeasuredReplicator replicatorMetrics;
 
   /**
    * Constructs a a datanode state machine.
@@ -98,14 +103,17 @@ public class DatanodeStateMachine implements Closeable {
    *                     enabled
    */
   public DatanodeStateMachine(DatanodeDetails datanodeDetails,
-      ConfigurationSource conf, CertificateClient certClient,
-      HddsDatanodeStopService hddsDatanodeStopService) throws IOException {
+                              ConfigurationSource conf,
+                              CertificateClient certClient,
+                              HddsDatanodeStopService hddsDatanodeStopService,
+                              DatanodeCRLStore crlStore) throws IOException {
     DatanodeConfiguration dnConf =
         conf.getObject(DatanodeConfiguration.class);
 
     this.hddsDatanodeStopService = hddsDatanodeStopService;
     this.conf = conf;
     this.datanodeDetails = datanodeDetails;
+    this.dnCRLStore = crlStore;
     executorService = Executors.newFixedThreadPool(
         getEndPointTaskThreadPoolSize(),
         new ThreadFactoryBuilder()
@@ -128,13 +136,14 @@ public class DatanodeStateMachine implements Closeable {
     ContainerReplicator replicator =
         new DownloadAndImportReplicator(container.getContainerSet(),
             container.getController(),
-            new SimpleContainerDownloader(conf,
-                dnCertClient != null ? dnCertClient.getCACertificate() : null),
+            new SimpleContainerDownloader(conf, dnCertClient),
             new TarContainerPacker());
 
+    replicatorMetrics = new MeasuredReplicator(replicator);
+
     supervisor =
-        new ReplicationSupervisor(container.getContainerSet(), replicator,
-            dnConf.getReplicationMaxStreams());
+        new ReplicationSupervisor(container.getContainerSet(),
+            replicatorMetrics, dnConf.getReplicationMaxStreams());
 
     // When we add new handlers just adding a new handler here should do the
     // trick.
@@ -159,6 +168,7 @@ public class DatanodeStateMachine implements Closeable {
         .addPublisherFor(ContainerReportsProto.class)
         .addPublisherFor(CommandStatusReportsProto.class)
         .addPublisherFor(PipelineReportsProto.class)
+        .addPublisherFor(CRLStatusReport.class)
         .build();
   }
 
@@ -169,7 +179,7 @@ public class DatanodeStateMachine implements Closeable {
     int totalServerCount = reconServerCount;
 
     try {
-      totalServerCount += HddsUtils.getSCMAddresses(conf).size();
+      totalServerCount += HddsUtils.getSCMAddressForDatanodes(conf).size();
     } catch (Exception e) {
       LOG.error("Fail to get scm addresses", e);
     }
@@ -205,6 +215,10 @@ public class DatanodeStateMachine implements Closeable {
     } finally {
       constructionLock.readLock().unlock();
     }
+  }
+
+  public DatanodeCRLStore getDnCRLStore() {
+    return dnCRLStore;
   }
 
   /**
@@ -257,6 +271,12 @@ public class DatanodeStateMachine implements Closeable {
       LOG.error("DatanodeStateMachine Shutdown due to an critical error");
       hddsDatanodeStopService.stopService();
     }
+  }
+
+  public void handleFatalVolumeFailures() {
+    LOG.error("DatanodeStateMachine Shutdown due to too many bad volumes, "
+        + "check " + DatanodeConfiguration.FAILED_VOLUMES_TOLERATED_KEY);
+    hddsDatanodeStopService.stopService();
   }
 
   /**
@@ -453,6 +473,11 @@ public class DatanodeStateMachine implements Closeable {
    */
   public synchronized void stopDaemon() {
     try {
+      try {
+        replicatorMetrics.close();
+      } catch (Exception e) {
+        LOG.error("Couldn't stop replicator metrics", e);
+      }
       supervisor.stop();
       context.setShutdownGracefully();
       context.setState(DatanodeStates.SHUTDOWN);

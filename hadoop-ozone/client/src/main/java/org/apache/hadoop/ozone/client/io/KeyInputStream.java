@@ -20,12 +20,17 @@ package org.apache.hadoop.ozone.client.io;
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
+import com.google.common.base.Preconditions;
+import org.apache.hadoop.fs.ByteBufferReadable;
 import org.apache.hadoop.fs.CanUnbuffer;
 import org.apache.hadoop.fs.FSExceptionMessages;
 import org.apache.hadoop.fs.Seekable;
@@ -33,6 +38,9 @@ import org.apache.hadoop.hdds.client.BlockID;
 import org.apache.hadoop.hdds.scm.XceiverClientFactory;
 import org.apache.hadoop.hdds.scm.pipeline.Pipeline;
 import org.apache.hadoop.hdds.scm.storage.BlockInputStream;
+import org.apache.hadoop.hdds.scm.storage.ByteArrayReader;
+import org.apache.hadoop.hdds.scm.storage.ByteBufferReader;
+import org.apache.hadoop.hdds.scm.storage.ByteReaderStrategy;
 import org.apache.hadoop.ozone.om.helpers.OmKeyInfo;
 import org.apache.hadoop.ozone.om.helpers.OmKeyLocationInfo;
 
@@ -45,7 +53,7 @@ import org.slf4j.LoggerFactory;
  * Maintaining a list of BlockInputStream. Read based on offset.
  */
 public class KeyInputStream extends InputStream
-    implements Seekable, CanUnbuffer {
+    implements Seekable, CanUnbuffer, ByteBufferReadable {
 
   private static final Logger LOG =
       LoggerFactory.getLogger(KeyInputStream.class);
@@ -94,6 +102,47 @@ public class KeyInputStream extends InputStream
         xceiverClientFactory, verifyChecksum, retryFunction);
 
     return new LengthInputStream(keyInputStream, keyInputStream.length);
+  }
+
+  public static List<LengthInputStream> getStreamsFromKeyInfo(OmKeyInfo keyInfo,
+      XceiverClientFactory xceiverClientFactory, boolean verifyChecksum,
+      Function<OmKeyInfo, OmKeyInfo> retryFunction) {
+    List<OmKeyLocationInfo> keyLocationInfos = keyInfo
+        .getLatestVersionLocations().getBlocksLatestVersionOnly();
+
+    List<LengthInputStream> lengthInputStreams = new ArrayList<>();
+
+    // Iterate through each block info in keyLocationInfos and assign it the
+    // corresponding part in the partsToBlockMap. Also increment each part's
+    // length accordingly.
+    Map<Integer, List<OmKeyLocationInfo>> partsToBlocksMap = new HashMap<>();
+    Map<Integer, Long> partsLengthMap = new HashMap<>();
+
+    for (OmKeyLocationInfo omKeyLocationInfo: keyLocationInfos) {
+      int partNumber = omKeyLocationInfo.getPartNumber();
+
+      if (!partsToBlocksMap.containsKey(partNumber)) {
+        partsToBlocksMap.put(partNumber, new ArrayList<>());
+        partsLengthMap.put(partNumber, 0L);
+      }
+      // Add Block to corresponding partNumber in partsToBlocksMap
+      partsToBlocksMap.get(partNumber).add(omKeyLocationInfo);
+      // Update the part length
+      partsLengthMap.put(partNumber,
+          partsLengthMap.get(partNumber) + omKeyLocationInfo.getLength());
+    }
+
+    // Create a KeyInputStream for each part.
+    for (Map.Entry<Integer, List<OmKeyLocationInfo>> entry :
+        partsToBlocksMap.entrySet()) {
+      KeyInputStream keyInputStream = new KeyInputStream();
+      keyInputStream.initialize(keyInfo, entry.getValue(),
+          xceiverClientFactory, verifyChecksum, retryFunction);
+      lengthInputStreams.add(new LengthInputStream(keyInputStream,
+          partsLengthMap.get(entry.getKey())));
+    }
+
+    return lengthInputStreams;
   }
 
   private synchronized void initialize(OmKeyInfo keyInfo,
@@ -173,18 +222,32 @@ public class KeyInputStream extends InputStream
    */
   @Override
   public synchronized int read(byte[] b, int off, int len) throws IOException {
-    checkOpen();
-    if (b == null) {
-      throw new NullPointerException();
-    }
-    if (off < 0 || len < 0 || len > b.length - off) {
-      throw new IndexOutOfBoundsException();
-    }
-    if (len == 0) {
+    ByteReaderStrategy strategy = new ByteArrayReader(b, off, len);
+    int bufferLen = strategy.getTargetLength();
+    if (bufferLen == 0) {
       return 0;
     }
+    return readWithStrategy(strategy);
+  }
+
+  @Override
+  public synchronized int read(ByteBuffer byteBuffer) throws IOException {
+    ByteReaderStrategy strategy = new ByteBufferReader(byteBuffer);
+    int bufferLen = strategy.getTargetLength();
+    if (bufferLen == 0) {
+      return 0;
+    }
+    return readWithStrategy(strategy);
+  }
+
+  synchronized int readWithStrategy(ByteReaderStrategy strategy) throws
+      IOException {
+    Preconditions.checkArgument(strategy != null);
+    checkOpen();
+
+    int buffLen = strategy.getTargetLength();
     int totalReadLen = 0;
-    while (len > 0) {
+    while (buffLen > 0) {
       // if we are at the last block and have read the entire block, return
       if (blockStreams.size() == 0 ||
           (blockStreams.size() - 1 <= blockIndex &&
@@ -195,20 +258,19 @@ public class KeyInputStream extends InputStream
 
       // Get the current blockStream and read data from it
       BlockInputStream current = blockStreams.get(blockIndex);
-      int numBytesToRead = Math.min(len, (int)current.getRemaining());
-      int numBytesRead = current.read(b, off, numBytesToRead);
+      int numBytesToRead = Math.min(buffLen, (int)current.getRemaining());
+      int numBytesRead = strategy.readFromBlock(current, numBytesToRead);
       if (numBytesRead != numBytesToRead) {
         // This implies that there is either data loss or corruption in the
         // chunk entries. Even EOF in the current stream would be covered in
         // this case.
         throw new IOException(String.format("Inconsistent read for blockID=%s "
-                        + "length=%d numBytesToRead=%d numBytesRead=%d",
-                current.getBlockID(), current.getLength(), numBytesToRead,
-                numBytesRead));
+                + "length=%d numBytesToRead=%d numBytesRead=%d",
+            current.getBlockID(), current.getLength(), numBytesToRead,
+            numBytesRead));
       }
       totalReadLen += numBytesRead;
-      off += numBytesRead;
-      len -= numBytesRead;
+      buffLen -= numBytesRead;
       if (current.getRemaining() <= 0 &&
           ((blockIndex + 1) < blockStreams.size())) {
         blockIndex += 1;
@@ -341,5 +403,10 @@ public class KeyInputStream extends InputStream
     for (BlockInputStream is : blockStreams) {
       is.unbuffer();
     }
+  }
+
+  @VisibleForTesting
+  public List<BlockInputStream> getBlockStreams() {
+    return blockStreams;
   }
 }

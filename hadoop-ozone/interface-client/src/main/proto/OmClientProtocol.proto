@@ -93,6 +93,8 @@ enum Type {
 
   ListTrash = 91;
   RecoverTrash = 92;
+
+  RevokeS3Secret = 93;
 }
 
 message OMRequest {
@@ -105,6 +107,7 @@ message OMRequest {
   required string clientId = 3;
 
   optional UserInfo userInfo = 4;
+  optional uint32 version = 5;
 
 
   optional CreateVolumeRequest              createVolumeRequest            = 11;
@@ -164,6 +167,8 @@ message OMRequest {
 
   optional ListTrashRequest                 listTrashRequest               = 91;
   optional RecoverTrashRequest              RecoverTrashRequest            = 92;
+
+  optional RevokeS3SecretRequest            RevokeS3SecretRequest          = 93;
 }
 
 message OMResponse {
@@ -746,12 +751,15 @@ message KeyLocation {
     // get the up to date pipeline information. This will need o3fs
     // provide not only a OM delegation token but also a SCM delegation token
     optional hadoop.hdds.Pipeline pipeline = 7;
+
+    optional int32 partNumber = 9 [default = -1];
 }
 
 message KeyLocationList {
     optional uint64 version = 1;
     repeated KeyLocation keyLocations = 2;
     optional FileEncryptionInfoProto fileEncryptionInfo = 3;
+    optional bool isMultipartKey = 4 [default = false];
 }
 
 message KeyInfo {
@@ -859,7 +867,7 @@ message LookupKeyResponse {
     // clients' followup request may carry this ID for stateful operations (similar
     // to a cookie).
     optional uint64 ID = 3;
-    // TODO : allow specifiying a particular version to read.
+    // TODO : allow specifying a particular version to read.
     optional uint64 openVersion = 4;
 }
 
@@ -1029,6 +1037,8 @@ message ServiceListResponse {
     // When security is enabled, return SCM CA certificate to Ozone client
     // to set up gRPC TLS for client to authenticate server(DN).
     optional string caCertificate = 3;
+
+    repeated string caCerts = 4;
 }
 
 message DBUpdatesResponse {
@@ -1194,6 +1204,10 @@ message GetS3SecretRequest {
 
 message GetS3SecretResponse {
     required S3Secret s3Secret = 2;
+}
+
+message RevokeS3SecretRequest {
+    required string kerberosID = 1;
 }
 
 /**

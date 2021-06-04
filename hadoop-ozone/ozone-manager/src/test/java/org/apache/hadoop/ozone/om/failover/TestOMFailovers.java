@@ -35,7 +35,7 @@ import org.apache.hadoop.ozone.om.protocolPB.OzoneManagerProtocolPB;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.OMResponse;
 import org.apache.hadoop.security.AccessControlException;
-import org.apache.hadoop.test.GenericTestUtils;
+import org.apache.ozone.test.GenericTestUtils;
 import org.junit.Assert;
 import org.junit.Test;
 import org.slf4j.event.Level;
@@ -79,9 +79,12 @@ public class TestOMFailovers {
           "om3", ex);
       Assert.assertTrue(ex.getCause() instanceof AccessControlException);
 
-      logCapturer.getOutput().contains(getRetryProxyDebugMsg("om1"));
-      logCapturer.getOutput().contains(getRetryProxyDebugMsg("om2"));
-      logCapturer.getOutput().contains(getRetryProxyDebugMsg("om3"));
+      Assert.assertTrue(
+          logCapturer.getOutput().contains(getRetryProxyDebugMsg("om1")));
+      Assert.assertTrue(
+          logCapturer.getOutput().contains(getRetryProxyDebugMsg("om2")));
+      Assert.assertTrue(
+          logCapturer.getOutput().contains(getRetryProxyDebugMsg("om3")));
     }
   }
 
@@ -90,7 +93,7 @@ public class TestOMFailovers {
         "Permission denied.";
   }
 
-  private final class MockOzoneManagerProtocol
+  private static final class MockOzoneManagerProtocol
       implements OzoneManagerProtocolPB {
 
     private final String omNodeId;

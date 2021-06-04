@@ -37,7 +37,7 @@ import org.apache.hadoop.ozone.container.common.volume.RoundRobinVolumeChoosingP
 import org.apache.hadoop.ozone.container.keyvalue.helpers.BlockUtils;
 import org.apache.hadoop.ozone.container.keyvalue.interfaces.ChunkManager;
 import org.apache.hadoop.ozone.container.ozoneimpl.ContainerScrubberConfiguration;
-import org.apache.hadoop.test.GenericTestUtils;
+import org.apache.ozone.test.GenericTestUtils;
 import org.apache.hadoop.ozone.container.common.utils.ReferenceCountedDB;
 import org.junit.After;
 import org.junit.Before;
@@ -56,6 +56,7 @@ import java.util.Collection;
 import java.util.List;
 import java.util.UUID;
 
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.apache.hadoop.hdds.scm.ScmConfigKeys.HDDS_DATANODE_DIR_KEY;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
@@ -96,7 +97,7 @@ import static org.junit.Assert.assertFalse;
     conf = new OzoneConfiguration();
     conf.set(HDDS_DATANODE_DIR_KEY, testRoot.getAbsolutePath());
     chunkManagerTestInfo.updateConfig(conf);
-    volumeSet = new MutableVolumeSet(UUID.randomUUID().toString(), conf);
+    volumeSet = new MutableVolumeSet(UUID.randomUUID().toString(), conf, null);
     chunkManager = chunkManagerTestInfo.createChunkManager(true, null);
   }
 
@@ -208,7 +209,7 @@ import static org.junit.Assert.assertFalse;
     int bytesPerChecksum = 2 * unitLen;
     Checksum checksum = new Checksum(ContainerProtos.ChecksumType.SHA256,
         bytesPerChecksum);
-    byte[] chunkData = RandomStringUtils.randomAscii(chunkLen).getBytes();
+    byte[] chunkData = RandomStringUtils.randomAscii(chunkLen).getBytes(UTF_8);
     ChecksumData checksumData = checksum.computeChecksum(chunkData);
     DispatcherContext writeStage = new DispatcherContext.Builder()
         .setStage(DispatcherContext.WriteChunkStage.WRITE_DATA)
@@ -219,7 +220,7 @@ import static org.junit.Assert.assertFalse;
 
     containerData = new KeyValueContainerData(containerId,
         chunkManagerTestInfo.getLayout(),
-        chunksPerBlock * chunkLen * totalBlocks,
+        (long) chunksPerBlock * chunkLen * totalBlocks,
         UUID.randomUUID().toString(), UUID.randomUUID().toString());
     container = new KeyValueContainer(containerData, conf);
     container.create(volumeSet, new RoundRobinVolumeChoosingPolicy(),

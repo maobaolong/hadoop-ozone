@@ -49,6 +49,7 @@ Find valid dirs
                         Should Contain   ${output}   OZONE_CONF_DIR='/opt/hadoop/etc/hadoop'
                         Should Contain   ${output}   OZONE_LIBEXEC_DIR='/opt/hadoop/libexec'
                         Should Contain   ${output}   WARNING: HADOOP_HOME
+                        Should Not Contain   ${output}   WARNING: OZONE_CONF_DIR
                         Should Not Contain   ${output}   WARNING: HADOOP_CONF_DIR
 
 Picks up deprecated vars if valid
@@ -64,6 +65,21 @@ Picks up deprecated vars if valid
                         Should Contain   ${output}   OZONE_LIBEXEC_DIR='%{HADOOP_HOME}/libexec'
                         Should contain   ${output}   WARNING: HADOOP_HOME
                         Should contain   ${output}   WARNING: HADOOP_CONF_DIR
+
+Warning for deprecated vars can be suppressed
+    Set Environment Variable       OZONE_DEPRECATION_WARNING    false
+    Set Environment Variable       HADOOP_HOME           /opt/hadoop
+    Set Environment Variable       HADOOP_LIBEXEC_DIR    %{HADOOP_HOME}/libexec
+    Set Environment Variable       HADOOP_CONF_DIR       /etc/hadoop
+    Remove Environment Variable    OZONE_HOME
+    Remove Environment Variable    OZONE_CONF_DIR
+    ${output} =         Execute          ozone envvars
+                        Should contain   ${output}   OZONE_HOME='%{HADOOP_HOME}'
+                        Should contain   ${output}   HDDS_LIB_JARS_DIR='%{HADOOP_HOME}/share/ozone/lib'
+                        Should contain   ${output}   OZONE_CONF_DIR='/etc/hadoop'
+                        Should Contain   ${output}   OZONE_LIBEXEC_DIR='%{HADOOP_HOME}/libexec'
+                        Should Not Contain   ${output}   WARNING: HADOOP_HOME
+                        Should Not Contain   ${output}   WARNING: HADOOP_CONF_DIR
 
 Works with only OZONE_HOME defined
     Remove Environment Variable    HADOOP_HOME

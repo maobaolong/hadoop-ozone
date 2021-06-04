@@ -61,7 +61,7 @@ import org.apache.hadoop.ozone.container.keyvalue.impl.BlockManagerImpl;
 import org.apache.hadoop.ozone.container.keyvalue.impl.ChunkManagerFactory;
 import org.apache.hadoop.ozone.container.keyvalue.interfaces.BlockManager;
 import org.apache.hadoop.ozone.container.keyvalue.interfaces.ChunkManager;
-import org.apache.hadoop.test.GenericTestUtils;
+import org.apache.ozone.test.GenericTestUtils;
 
 import com.google.common.collect.Maps;
 import org.apache.commons.io.FileUtils;
@@ -98,18 +98,20 @@ public class TestContainerPersistence {
       LoggerFactory.getLogger(TestContainerPersistence.class);
   private static String hddsPath;
   private static OzoneConfiguration conf;
-  private static ContainerSet containerSet;
-  private static VolumeSet volumeSet;
   private static VolumeChoosingPolicy volumeChoosingPolicy;
-  private static BlockManager blockManager;
-  private static ChunkManager chunkManager;
+
+  private ContainerSet containerSet;
+  private VolumeSet volumeSet;
+  private BlockManager blockManager;
+  private ChunkManager chunkManager;
+
   @Rule
   public ExpectedException exception = ExpectedException.none();
   /**
    * Set the timeout for every test.
    */
   @Rule
-  public Timeout testTimeout = new Timeout(300000);
+  public Timeout testTimeout = Timeout.seconds(300);
 
   private final ChunkLayOutVersion layout;
 
@@ -139,9 +141,10 @@ public class TestContainerPersistence {
   @Before
   public void setupPaths() throws IOException {
     containerSet = new ContainerSet();
-    volumeSet = new MutableVolumeSet(DATANODE_UUID, conf);
+    volumeSet = new MutableVolumeSet(DATANODE_UUID, conf, null);
     blockManager = new BlockManagerImpl(conf);
-    chunkManager = ChunkManagerFactory.createChunkManager(conf, blockManager);
+    chunkManager = ChunkManagerFactory.createChunkManager(conf, blockManager,
+        null);
 
     for (String dir : conf.getStrings(ScmConfigKeys.HDDS_DATANODE_DIR_KEY)) {
       StorageLocation location = StorageLocation.parse(dir);

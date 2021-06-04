@@ -21,6 +21,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.PrintStream;
+import java.io.UnsupportedEncodingException;
 import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
@@ -29,21 +30,27 @@ import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hdds.cli.GenericCli;
+import org.apache.hadoop.hdds.cli.OzoneAdmin;
 import org.apache.hadoop.ozone.OFSPath;
 import org.apache.hadoop.fs.ozone.OzoneFsShell;
 import org.apache.hadoop.hdds.conf.OzoneConfiguration;
 import org.apache.hadoop.ozone.MiniOzoneCluster;
-import org.apache.hadoop.ozone.MiniOzoneHAClusterImpl;
-import org.apache.hadoop.ozone.OmUtils;
+import org.apache.hadoop.ozone.MiniOzoneOMHAClusterImpl;
 import org.apache.hadoop.ozone.OzoneConsts;
 import org.apache.hadoop.ozone.client.ObjectStore;
+import org.apache.hadoop.ozone.ha.ConfUtils;
 import org.apache.hadoop.ozone.om.OMConfigKeys;
 import org.apache.hadoop.ozone.om.OzoneManager;
-import org.apache.hadoop.test.GenericTestUtils;
-import org.apache.hadoop.test.LambdaTestUtils;
+import org.apache.ozone.test.GenericTestUtils;
+import org.apache.ozone.test.LambdaTestUtils;
 import org.apache.hadoop.util.ToolRunner;
+import org.apache.hadoop.fs.TrashPolicy;
+import org.apache.hadoop.ozone.om.TrashPolicyOzone;
 
 import com.google.common.base.Strings;
+
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.FS_TRASH_INTERVAL_KEY;
 import static org.apache.hadoop.fs.FileSystem.FS_DEFAULT_NAME_KEY;
 import static org.apache.hadoop.ozone.OzoneConsts.OZONE_OFS_URI_SCHEME;
@@ -80,13 +87,14 @@ public class TestOzoneShellHA {
    * Set the timeout for every test.
    */
   @Rule
-  public Timeout testTimeout = new Timeout(300000);
+  public Timeout testTimeout = Timeout.seconds(300);
 
   private static File baseDir;
   private static File testFile;
   private static OzoneConfiguration conf = null;
   private static MiniOzoneCluster cluster = null;
   private static OzoneShell ozoneShell = null;
+  private static OzoneAdmin ozoneAdminShell = null;
 
   private final ByteArrayOutputStream out = new ByteArrayOutputStream();
   private final ByteArrayOutputStream err = new ByteArrayOutputStream();
@@ -118,13 +126,14 @@ public class TestOzoneShellHA {
     testFile.createNewFile();
 
     ozoneShell = new OzoneShell();
+    ozoneAdminShell = new OzoneAdmin();
 
     // Init HA cluster
     omServiceId = "om-service-test1";
     numOfOMs = 3;
     clusterId = UUID.randomUUID().toString();
     scmId = UUID.randomUUID().toString();
-    cluster = MiniOzoneCluster.newHABuilder(conf)
+    cluster = MiniOzoneCluster.newOMHABuilder(conf)
         .setClusterId(clusterId)
         .setScmId(scmId)
         .setOMServiceId(omServiceId)
@@ -149,9 +158,9 @@ public class TestOzoneShellHA {
   }
 
   @Before
-  public void setup() {
-    System.setOut(new PrintStream(out));
-    System.setErr(new PrintStream(err));
+  public void setup() throws UnsupportedEncodingException {
+    System.setOut(new PrintStream(out, false, UTF_8.name()));
+    System.setErr(new PrintStream(err, false, UTF_8.name()));
   }
 
   @After
@@ -165,7 +174,7 @@ public class TestOzoneShellHA {
     System.setErr(OLD_ERR);
   }
 
-  private void execute(Shell shell, String[] args) {
+  private void execute(GenericCli shell, String[] args) {
     LOG.info("Executing OzoneShell command with args {}", Arrays.asList(args));
     CommandLine cmd = shell.getCmd();
 
@@ -225,7 +234,7 @@ public class TestOzoneShellHA {
    * @return the leader OM's Node ID in the MiniOzoneHACluster.
    */
   private String getLeaderOMNodeId() {
-    MiniOzoneHAClusterImpl haCluster = (MiniOzoneHAClusterImpl) cluster;
+    MiniOzoneOMHAClusterImpl haCluster = (MiniOzoneOMHAClusterImpl) cluster;
     OzoneManager omLeader = haCluster.getOMLeader();
     Assert.assertNotNull("There should be a leader OM at this point.",
         omLeader);
@@ -257,7 +266,7 @@ public class TestOzoneShellHA {
     res[indexOmServiceIds] = getSetConfStringFromConf(
         OMConfigKeys.OZONE_OM_SERVICE_IDS_KEY);
 
-    String omNodesKey = OmUtils.addKeySuffixes(
+    String omNodesKey = ConfUtils.addKeySuffixes(
         OMConfigKeys.OZONE_OM_NODES_KEY, omServiceId);
     String omNodesVal = conf.get(omNodesKey);
     res[indexOmNodes] = generateSetConfString(omNodesKey, omNodesVal);
@@ -267,7 +276,7 @@ public class TestOzoneShellHA {
     assert(omNodesArr.length == numOfOMs);
     for (int i = 0; i < numOfOMs; i++) {
       res[indexOmAddressStart + i] =
-          getSetConfStringFromConf(OmUtils.addKeySuffixes(
+          getSetConfStringFromConf(ConfUtils.addKeySuffixes(
               OMConfigKeys.OZONE_OM_ADDRESS_KEY, omServiceId, omNodesArr[i]));
     }
 
@@ -316,8 +325,8 @@ public class TestOzoneShellHA {
   /**
    * Helper function to get nums of keys from info of listing command.
    */
-  private int getNumOfKeys() {
-    return out.toString().split("key").length - 1;
+  private int getNumOfKeys() throws UnsupportedEncodingException {
+    return out.toString(UTF_8.name()).split("key").length - 1;
   }
 
   /**
@@ -339,8 +348,10 @@ public class TestOzoneShellHA {
   /**
    * Helper function to get nums of buckets from info of listing command.
    */
-  private int getNumOfBuckets(String bucketPrefix) {
-    return out.toString().split(bucketPrefix).length - 1;
+  private int getNumOfBuckets(String bucketPrefix)
+      throws UnsupportedEncodingException {
+    return out.toString(UTF_8.name())
+        .split(bucketPrefix).length - 1;
   }
 
 
@@ -353,7 +364,7 @@ public class TestOzoneShellHA {
 
     // Get leader OM node RPC address from ozone.om.address.omServiceId.omNode
     String omLeaderNodeId = getLeaderOMNodeId();
-    String omLeaderNodeAddrKey = OmUtils.addKeySuffixes(
+    String omLeaderNodeAddrKey = ConfUtils.addKeySuffixes(
         OMConfigKeys.OZONE_OM_ADDRESS_KEY, omServiceId, omLeaderNodeId);
     String omLeaderNodeAddr = conf.get(omLeaderNodeAddrKey);
     String omLeaderNodeAddrWithoutPort = omLeaderNodeAddr.split(":")[0];
@@ -366,9 +377,9 @@ public class TestOzoneShellHA {
     // TODO: Fix this behavior, then uncomment the execute() below.
     String setOmAddress = "--set=" + OMConfigKeys.OZONE_OM_ADDRESS_KEY + "="
         + omLeaderNodeAddr;
-    String[] args = new String[] {setOmAddress,
-        "volume", "create", "o3://" + omLeaderNodeAddrWithoutPort + "/volume2"};
-    //execute(ozoneShell, args);
+    String[] args = new String[] {setOmAddress, "volume", "create",
+        "o3://" + omLeaderNodeAddrWithoutPort + "/volume2"};
+    execute(ozoneShell, args);
 
     // Test case 3: ozone sh volume create o3://om1:port/volume3
     // Expectation: Success.
@@ -403,7 +414,7 @@ public class TestOzoneShellHA {
    * Test ozone shell list command.
    */
   @Test
-  public void testOzoneShCmdList() {
+  public void testOzoneShCmdList() throws UnsupportedEncodingException {
     // Part of listing keys test.
     generateKeys("/volume4", "/bucket");
     final String destinationBucket = "o3://" + omServiceId + "/volume4/bucket";
@@ -450,6 +461,28 @@ public class TestOzoneShellHA {
   }
 
   /**
+   * Test ozone admin list command.
+   */
+  @Test
+  public void testOzoneAdminCmdList() throws UnsupportedEncodingException {
+    // Part of listing keys test.
+    generateKeys("/volume6", "/bucket");
+    // Test case 1: list OPEN container
+    String state = "--state=OPEN";
+    String[] args = new String[] {"container", "list", "--scm",
+        "localhost:" + cluster.getStorageContainerManager().getClientRpcPort(),
+        state};
+    execute(ozoneAdminShell, args);
+
+    // Test case 2: list CLOSED container
+    state = "--state=CLOSED";
+    args = new String[] {"container", "list", "--scm",
+        "localhost:" + cluster.getStorageContainerManager().getClientRpcPort(),
+        state};
+    execute(ozoneAdminShell, args);
+  }
+
+  /**
    * Helper function to retrieve Ozone client configuration for trash testing.
    * @param hostPrefix Scheme + Authority. e.g. ofs://om-service-test1
    * @param configuration Server config to generate client config from.
@@ -462,6 +495,23 @@ public class TestOzoneShellHA {
     // fs.ofs.impl should be loaded from META-INF, no need to explicitly set it
     clientConf.set(FS_DEFAULT_NAME_KEY, hostPrefix);
     clientConf.setInt(FS_TRASH_INTERVAL_KEY, 60);
+    return clientConf;
+  }
+
+  /**
+   * Helper function to retrieve Ozone client configuration for ozone
+   * trash testing with TrashPolicyOzone.
+   * @param hostPrefix Scheme + Authority. e.g. ofs://om-service-test1
+   * @param configuration Server config to generate client config from.
+   * @return Config ofs configuration added with fs.trash.classname
+   * = TrashPolicyOzone.
+   */
+  private OzoneConfiguration getClientConfForOzoneTrashPolicy(
+          String hostPrefix, OzoneConfiguration configuration) {
+    OzoneConfiguration clientConf =
+            getClientConfForOFS(hostPrefix, configuration);
+    clientConf.setClass("fs.trash.classname", TrashPolicyOzone.class,
+            TrashPolicy.class);
     return clientConf;
   }
 
@@ -524,8 +574,88 @@ public class TestOzoneShellHA {
       }
     } finally {
       shell.close();
+      fs.close();
     }
   }
+
+  @Test
+  public void testDeleteTrashNoSkipTrash() throws Exception {
+
+    // Test delete from Trash directory removes item from filesystem
+
+    // setup configuration to use TrashPolicyOzone
+    // (default is TrashPolicyDefault)
+    final String hostPrefix = OZONE_OFS_URI_SCHEME + "://" + omServiceId;
+    OzoneConfiguration clientConf =
+            getClientConfForOzoneTrashPolicy(hostPrefix, conf);
+    OzoneFsShell shell = new OzoneFsShell(clientConf);
+
+    int res;
+
+    // create volume: vol1 with bucket: bucket1
+    final String testVolBucket = "/vol1/bucket1";
+    final String testKey = testVolBucket+"/key1";
+
+    final String[] volBucketArgs = new String[] {"-mkdir", "-p", testVolBucket};
+    final String[] keyArgs = new String[] {"-touch", testKey};
+    final String[] listArgs = new String[] {"key", "list", testVolBucket};
+
+    LOG.info("Executing testDeleteTrashNoSkipTrash: FsShell with args {}",
+            Arrays.asList(volBucketArgs));
+    res = ToolRunner.run(shell, volBucketArgs);
+    Assert.assertEquals(0, res);
+
+    // create key: key1 belonging to bucket1
+    res = ToolRunner.run(shell, keyArgs);
+    Assert.assertEquals(0, res);
+
+    // check directory listing for bucket1 contains 1 key
+    out.reset();
+    execute(ozoneShell, listArgs);
+    Assert.assertEquals(1, getNumOfKeys());
+
+    // Test deleting items in trash are discarded (removed from filesystem)
+    // 1.) remove key1 from bucket1 with fs shell rm command
+    // 2.) on rm, item is placed in Trash
+    // 3.) remove Trash directory and all contents, 
+    //     check directory listing = 0 items
+
+    final String[] rmKeyArgs = new String[] {"-rm", "-R", testKey};
+    final String[] rmTrashArgs = new String[] {"-rm", "-R",
+                                               testVolBucket+"/.Trash"};
+    final Path trashPathKey1 = Path.mergePaths(new Path(
+            new OFSPath(testKey).getTrashRoot(), new Path("Current")),
+            new Path(testKey));
+    FileSystem fs = FileSystem.get(clientConf);
+
+    try {
+      // on delete key, item is placed in trash
+      LOG.info("Executing testDeleteTrashNoSkipTrash: FsShell with args {}",
+              Arrays.asList(rmKeyArgs));
+      res = ToolRunner.run(shell, rmKeyArgs);
+      Assert.assertEquals(0, res);
+
+      LOG.info("Executing testDeleteTrashNoSkipTrash: key1 deleted moved to"
+              +" Trash: "+trashPathKey1.toString());
+      fs.getFileStatus(trashPathKey1);
+
+      LOG.info("Executing testDeleteTrashNoSkipTrash: deleting trash FsShell "
+              +"with args{}: ", Arrays.asList(rmTrashArgs));
+      res = ToolRunner.run(shell, rmTrashArgs);
+      Assert.assertEquals(0, res);
+
+      out.reset();
+      // once trash is is removed, trash should be deleted from filesystem
+      execute(ozoneShell, listArgs);
+      Assert.assertEquals(0, getNumOfKeys());
+
+    } finally {
+      shell.close();
+      fs.close();
+    }
+
+  }
+
 
   @Test
   @SuppressWarnings("methodlength")

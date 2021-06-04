@@ -128,6 +128,7 @@ import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.RenameK
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.RenameKeyRequest;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.RenameKeysRequest;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.RenewDelegationTokenResponseProto;
+import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.RevokeS3SecretRequest;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.ServiceListRequest;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.ServiceListResponse;
 import org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.SetAclRequest;
@@ -149,6 +150,7 @@ import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
 import com.google.protobuf.ByteString;
 
+import static org.apache.hadoop.ozone.ClientVersions.CURRENT_VERSION;
 import static org.apache.hadoop.ozone.om.exceptions.OMException.ResultCodes;
 import static org.apache.hadoop.ozone.om.exceptions.OMException.ResultCodes.TOKEN_ERROR_OTHER;
 import static org.apache.hadoop.ozone.protocol.proto.OzoneManagerProtocolProtos.Status.ACCESS_DENIED;
@@ -200,6 +202,7 @@ public final class OzoneManagerProtocolClientSideTranslatorPB
 
     return OMRequest.newBuilder()
         .setCmdType(cmdType)
+        .setVersion(CURRENT_VERSION)
         .setClientId(clientID);
   }
 
@@ -646,9 +649,12 @@ public final class OzoneManagerProtocolClientSideTranslatorPB
         .setBucketName(args.getBucketName())
         .setKeyName(args.getKeyName())
         .setDataSize(args.getDataSize())
-        .addAllKeyLocations(
-            locationInfoList.stream().map(OmKeyLocationInfo::getProtobuf)
-                .collect(Collectors.toList())).build();
+        .setType(args.getType())
+        .setFactor(args.getFactor())
+        .addAllKeyLocations(locationInfoList.stream()
+            // TODO use OM version?
+            .map(info -> info.getProtobuf(CURRENT_VERSION))
+            .collect(Collectors.toList())).build();
     req.setKeyArgs(keyArgs);
     req.setClientID(clientId);
 
@@ -781,6 +787,7 @@ public final class OzoneManagerProtocolClientSideTranslatorPB
    * @param bucket - Name of the bucket.
    * @throws IOException
    */
+  @Override
   public void deleteBucket(String volume, String bucket) throws IOException {
     DeleteBucketRequest.Builder req = DeleteBucketRequest.newBuilder();
     req.setVolumeName(volume);
@@ -842,7 +849,17 @@ public final class OzoneManagerProtocolClientSideTranslatorPB
         .getGetS3SecretResponse();
 
     return S3SecretValue.fromProtobuf(resp.getS3Secret());
+  }
 
+  @Override
+  public void revokeS3Secret(String kerberosID) throws IOException {
+    RevokeS3SecretRequest request = RevokeS3SecretRequest.newBuilder()
+            .setKerberosID(kerberosID)
+            .build();
+    OMRequest omRequest = createOMRequest(Type.RevokeS3Secret)
+            .setRevokeS3SecretRequest(request)
+            .build();
+    handleError(submitRequest(omRequest));
   }
 
   /**
@@ -898,9 +915,10 @@ public final class OzoneManagerProtocolClientSideTranslatorPB
         .setIsMultipartKey(omKeyArgs.getIsMultipartKey())
         .setMultipartNumber(omKeyArgs.getMultipartUploadPartNumber())
         .setDataSize(omKeyArgs.getDataSize())
-        .addAllKeyLocations(
-            locationInfoList.stream().map(OmKeyLocationInfo::getProtobuf)
-                .collect(Collectors.toList()));
+        .addAllKeyLocations(locationInfoList.stream()
+            // TODO use OM version?
+            .map(info -> info.getProtobuf(CURRENT_VERSION))
+            .collect(Collectors.toList()));
     multipartCommitUploadPartRequest.setClientID(clientId);
     multipartCommitUploadPartRequest.setKeyArgs(keyArgs.build());
 
@@ -1039,6 +1057,7 @@ public final class OzoneManagerProtocolClientSideTranslatorPB
     return response;
   }
 
+  @Override
   public List<ServiceInfo> getServiceList() throws IOException {
     ServiceListRequest req = ServiceListRequest.newBuilder().build();
 
@@ -1070,7 +1089,7 @@ public final class OzoneManagerProtocolClientSideTranslatorPB
         resp.getServiceInfoList().stream()
             .map(ServiceInfo::getFromProtobuf)
             .collect(Collectors.toList()),
-        resp.getCaCertificate());
+        resp.getCaCertificate(), resp.getCaCertsList());
   }
 
   /**
@@ -1176,6 +1195,7 @@ public final class OzoneManagerProtocolClientSideTranslatorPB
    * @return OzoneFileStatus for the key.
    * @throws IOException
    */
+  @Override
   public OzoneFileStatus getFileStatus(OmKeyArgs args) throws IOException {
     KeyArgs keyArgs = KeyArgs.newBuilder()
         .setVolumeName(args.getVolumeName())

@@ -47,7 +47,7 @@ import org.apache.hadoop.ozone.container.common.transport.server.ratis.Dispatche
 import org.apache.hadoop.ozone.container.common.volume.HddsVolume;
 import org.apache.hadoop.ozone.container.common.volume.MutableVolumeSet;
 import org.apache.hadoop.ozone.container.common.volume.VolumeSet;
-import org.apache.hadoop.test.GenericTestUtils;
+import org.apache.ozone.test.GenericTestUtils;
 
 import static org.apache.hadoop.hdds.HddsConfigKeys.HDDS_DATANODE_VOLUME_CHOOSING_POLICY;
 import static org.apache.hadoop.hdds.scm.ScmConfigKeys.HDDS_DATANODE_DIR_KEY;
@@ -74,16 +74,16 @@ import static org.mockito.Mockito.times;
 public class TestKeyValueHandler {
 
   @Rule
-  public TestRule timeout = new Timeout(300000);
+  public TestRule timeout = Timeout.seconds(300);
 
-  private static HddsDispatcher dispatcher;
-  private static KeyValueHandler handler;
-
-  private final static String DATANODE_UUID = UUID.randomUUID().toString();
+  private static final String DATANODE_UUID = UUID.randomUUID().toString();
 
   private static final long DUMMY_CONTAINER_ID = 9999;
 
   private final ChunkLayOutVersion layout;
+
+  private HddsDispatcher dispatcher;
+  private KeyValueHandler handler;
 
   public TestKeyValueHandler(ChunkLayOutVersion layout) {
     this.layout = layout;
@@ -264,7 +264,8 @@ public class TestKeyValueHandler {
     OzoneConfiguration conf = new OzoneConfiguration();
     conf.set(HDDS_DATANODE_DIR_KEY, path.getAbsolutePath());
     MutableVolumeSet
-        volumeSet = new MutableVolumeSet(UUID.randomUUID().toString(), conf);
+        volumeSet = new MutableVolumeSet(UUID.randomUUID().toString(), conf,
+        null);
     try {
       ContainerSet cset = new ContainerSet();
       int[] interval = new int[1];
@@ -372,7 +373,7 @@ public class TestKeyValueHandler {
       final KeyValueHandler kvHandler = new KeyValueHandler(conf,
           UUID.randomUUID().toString(), containerSet, volumeSet, metrics,
           c -> icrReceived.incrementAndGet());
-      kvHandler.setScmID(UUID.randomUUID().toString());
+      kvHandler.setClusterID(UUID.randomUUID().toString());
 
       final ContainerCommandRequestProto createContainer =
           ContainerCommandRequestProto.newBuilder()

@@ -42,7 +42,7 @@ import org.apache.hadoop.ozone.om.request.TestOMRequestUtils;
 import org.apache.hadoop.ozone.security.acl.IAccessAuthorizer.ACLIdentityType;
 import org.apache.hadoop.ozone.security.acl.IAccessAuthorizer.ACLType;
 import org.apache.hadoop.security.UserGroupInformation;
-import org.apache.hadoop.test.GenericTestUtils;
+import org.apache.ozone.test.GenericTestUtils;
 import org.junit.BeforeClass;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -104,10 +104,10 @@ public class TestOzoneNativeAuthorizer {
   private static UserGroupInformation adminUgi;
   private static UserGroupInformation testUgi;
 
-  private static OzoneObj volObj;
-  private static OzoneObj buckObj;
-  private static OzoneObj keyObj;
-  private static OzoneObj prefixObj;
+  private OzoneObj volObj;
+  private OzoneObj buckObj;
+  private OzoneObj keyObj;
+  private OzoneObj prefixObj;
 
   @Parameterized.Parameters
   public static Collection<Object[]> data() {

@@ -18,20 +18,33 @@
 load ../../main/compose/testlib.sh
 @test "Find test recursive, only on one level" {
   cd $BATS_TEST_DIRNAME
+  result=$(all_tests_in_immediate_child_dirs | xargs)
+  [[ "$result" == "failing1/test.sh test1/test.sh test2/test.sh test4/test.sh" ]]
+}
+
+@test "Find tests without explicit filter" {
+  cd $BATS_TEST_DIRNAME
   run find_tests
-  [[ "$output" == "./test1/test.sh ./test2/test.sh ./test4/test.sh" ]]
+  [[ "$output" == "test1/test.sh test2/test.sh test4/test.sh" ]]
 }
 
 @test "Find test by suite" {
   OZONE_ACCEPTANCE_SUITE=one
   cd $BATS_TEST_DIRNAME
   run find_tests
-  [[ "$output" == "./test4/test.sh" ]]
+  [[ "$output" == "test4/test.sh" ]]
+}
+
+@test "Find failing test suite explicitly" {
+  OZONE_ACCEPTANCE_SUITE=failing
+  cd $BATS_TEST_DIRNAME
+  run find_tests
+  [[ "$output" == "failing1/test.sh" ]]
 }
 
 @test "Find test default suite" {
   OZONE_ACCEPTANCE_SUITE=misc
   cd $BATS_TEST_DIRNAME
   run find_tests
-  [[ "$output" == "./test1/test.sh ./test2/test.sh" ]]
+  [[ "$output" == "test1/test.sh test2/test.sh" ]]
 }

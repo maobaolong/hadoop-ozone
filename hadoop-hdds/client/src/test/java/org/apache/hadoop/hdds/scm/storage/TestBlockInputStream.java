@@ -32,7 +32,7 @@ import org.apache.hadoop.hdds.scm.pipeline.Pipeline;
 import org.apache.hadoop.ozone.common.Checksum;
 
 import org.apache.hadoop.ozone.common.OzoneChecksumException;
-import org.apache.hadoop.test.LambdaTestUtils;
+import org.apache.ozone.test.LambdaTestUtils;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
@@ -42,6 +42,7 @@ import org.mockito.junit.MockitoJUnitRunner;
 
 import java.io.EOFException;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -68,8 +69,8 @@ import static org.mockito.Mockito.when;
 public class TestBlockInputStream {
 
   private static final int CHUNK_SIZE = 100;
-  private static Checksum checksum;
 
+  private Checksum checksum;
   private BlockInputStream blockStream;
   private byte[] blockData;
   private int blockSize;
@@ -208,6 +209,40 @@ public class TestBlockInputStream {
   }
 
   @Test
+  public void testReadWithByteBuffer() throws Exception {
+    // read 200 bytes of data starting from position 50. Chunk0 contains
+    // indices 0 to 99, chunk1 from 100 to 199 and chunk3 from 200 to 299. So
+    // the read should result in 3 ChunkInputStream reads
+    seekAndVerify(50);
+    ByteBuffer buffer = ByteBuffer.allocate(200);
+    blockStream.read(buffer);
+    matchWithInputData(buffer.array(), 50, 200);
+
+    // The new position of the blockInputStream should be the last index read
+    // + 1.
+    Assert.assertEquals(250, blockStream.getPos());
+    Assert.assertEquals(2, blockStream.getChunkIndex());
+  }
+
+  @Test
+  public void testReadWithDirectByteBuffer() throws Exception {
+    // read 200 bytes of data starting from position 50. Chunk0 contains
+    // indices 0 to 99, chunk1 from 100 to 199 and chunk3 from 200 to 299. So
+    // the read should result in 3 ChunkInputStream reads
+    seekAndVerify(50);
+    ByteBuffer buffer = ByteBuffer.allocateDirect(200);
+    blockStream.read(buffer);
+    for (int i = 50; i < 50 + 200; i++) {
+      Assert.assertEquals(blockData[i], buffer.get(i - 50));
+    }
+
+    // The new position of the blockInputStream should be the last index read
+    // + 1.
+    Assert.assertEquals(250, blockStream.getPos());
+    Assert.assertEquals(2, blockStream.getChunkIndex());
+  }
+
+  @Test
   public void testSeekAndRead() throws Exception {
     // Seek to a position and read data
     seekAndVerify(50);
@@ -231,11 +266,15 @@ public class TestBlockInputStream {
             MockPipeline.createSingleNodePipeline(), null,
             false, null, chunks, chunkDataMap, isRefreshed);
 
-    Assert.assertFalse(isRefreshed.get());
-    seekAndVerify(50);
-    byte[] b = new byte[200];
-    blockInputStreamWithRetry.read(b, 0, 200);
-    Assert.assertTrue(isRefreshed.get());
+    try {
+      Assert.assertFalse(isRefreshed.get());
+      seekAndVerify(50);
+      byte[] b = new byte[200];
+      blockInputStreamWithRetry.read(b, 0, 200);
+      Assert.assertTrue(isRefreshed.get());
+    } finally {
+      blockInputStreamWithRetry.close();
+    }
   }
 
   @Test
@@ -263,15 +302,19 @@ public class TestBlockInputStream {
         return stream;
       }
     };
-    subject.initialize();
+    try {
+      subject.initialize();
 
-    // WHEN
-    byte[] b = new byte[len];
-    int bytesRead = subject.read(b, 0, len);
+      // WHEN
+      byte[] b = new byte[len];
+      int bytesRead = subject.read(b, 0, len);
 
-    // THEN
-    Assert.assertEquals(len, bytesRead);
-    verify(refreshPipeline).apply(blockID);
+      // THEN
+      Assert.assertEquals(len, bytesRead);
+      verify(refreshPipeline).apply(blockID);
+    } finally {
+      subject.close();
+    }
   }
 
   @Test
@@ -297,15 +340,20 @@ public class TestBlockInputStream {
         return stream;
       }
     };
-    subject.initialize();
 
-    // WHEN
-    byte[] b = new byte[len];
-    LambdaTestUtils.intercept(StorageContainerException.class,
-        () -> subject.read(b, 0, len));
+    try {
+      subject.initialize();
 
-    // THEN
-    verify(refreshPipeline).apply(blockID);
+      // WHEN
+      byte[] b = new byte[len];
+      LambdaTestUtils.intercept(StorageContainerException.class,
+          () -> subject.read(b, 0, len));
+
+      // THEN
+      verify(refreshPipeline).apply(blockID);
+    } finally {
+      subject.close();
+    }
   }
 
   @Test
@@ -328,15 +376,20 @@ public class TestBlockInputStream {
         return stream;
       }
     };
-    subject.initialize();
 
-    // WHEN
-    byte[] b = new byte[len];
-    LambdaTestUtils.intercept(OzoneChecksumException.class,
-        () -> subject.read(b, 0, len));
+    try {
+      subject.initialize();
 
-    // THEN
-    verify(refreshPipeline, never()).apply(blockID);
+      // WHEN
+      byte[] b = new byte[len];
+      LambdaTestUtils.intercept(OzoneChecksumException.class,
+          () -> subject.read(b, 0, len));
+
+      // THEN
+      verify(refreshPipeline, never()).apply(blockID);
+    } finally {
+      subject.close();
+    }
   }
 
   private Pipeline samePipelineWithNewId(Pipeline pipeline) {
@@ -380,17 +433,22 @@ public class TestBlockInputStream {
         return stream;
       }
     };
-    subject.initialize();
-    subject.unbuffer();
 
-    // WHEN
-    byte[] b = new byte[len];
-    int bytesRead = subject.read(b, 0, len);
+    try {
+      subject.initialize();
+      subject.unbuffer();
 
-    // THEN
-    Assert.assertEquals(len, bytesRead);
-    verify(refreshPipeline).apply(blockID);
-    verify(clientFactory).acquireClientForReadData(pipeline);
-    verify(clientFactory).releaseClient(client, false);
+      // WHEN
+      byte[] b = new byte[len];
+      int bytesRead = subject.read(b, 0, len);
+
+      // THEN
+      Assert.assertEquals(len, bytesRead);
+      verify(refreshPipeline).apply(blockID);
+      verify(clientFactory).acquireClientForReadData(pipeline);
+      verify(clientFactory).releaseClient(client, false);
+    } finally {
+      subject.close();
+    }
   }
 }

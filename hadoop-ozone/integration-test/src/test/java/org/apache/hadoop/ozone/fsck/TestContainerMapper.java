@@ -27,7 +27,7 @@ import org.apache.hadoop.ozone.MiniOzoneCluster;
 import org.apache.hadoop.ozone.client.*;
 import org.apache.hadoop.ozone.client.io.OzoneOutputStream;
 import org.apache.hadoop.ozone.om.OzoneManager;
-import org.apache.hadoop.test.GenericTestUtils;
+import org.apache.ozone.test.GenericTestUtils;
 import org.apache.ratis.util.FileUtils;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
@@ -50,7 +50,7 @@ public class TestContainerMapper {
     * Set a timeout for each test.
     */
   @Rule
-  public Timeout timeout = new Timeout(300000);
+  public Timeout timeout = Timeout.seconds(300);
 
   private static MiniOzoneCluster cluster = null;
   private static OzoneClient ozClient = null;

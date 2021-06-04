@@ -23,7 +23,7 @@ import java.util.UUID;
 import org.apache.hadoop.ozone.om.helpers.OmVolumeArgs;
 import org.apache.hadoop.ozone.om.request.TestOMRequestUtils;
 import org.apache.hadoop.ozone.om.response.OMClientResponse;
-import org.apache.hadoop.test.GenericTestUtils;
+import org.apache.ozone.test.GenericTestUtils;
 import org.junit.Assert;
 import org.junit.Test;
 
@@ -181,9 +181,8 @@ public class TestOMVolumeSetQuotaRequest extends TestOMVolumeRequest {
 
     int countException = 0;
     try {
-      OMClientResponse omClientResponse =
-          omVolumeSetQuotaRequest.validateAndUpdateCache(ozoneManager, 1,
-              ozoneManagerDoubleBufferHelper);
+      omVolumeSetQuotaRequest.validateAndUpdateCache(ozoneManager, 1,
+          ozoneManagerDoubleBufferHelper);
     } catch (IllegalArgumentException ex) {
       countException++;
       GenericTestUtils.assertExceptionContains(
